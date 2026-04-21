@@ -12,18 +12,15 @@ const SB_CONFIG = {
 const BRANCHES = ["大忠店", "謎先生"];
 
 const ROOMS = [
-  // 大忠店（location_id: 1）
   { id:"A", name:"孤兒怨",   branch:"大忠店", sbServiceId:2,  sbLocationId:1, color:"#B04070", bg:"#FCEEF3", emoji:"👻", duration:75  },
   { id:"B", name:"屎力全開", branch:"大忠店", sbServiceId:3,  sbLocationId:1, color:"#7B4FA6", bg:"#F5EFF9", emoji:"💩", duration:75  },
   { id:"C", name:"越獄者",   branch:"大忠店", sbServiceId:15, sbLocationId:1, color:"#2E8B2E", bg:"#EDF8ED", emoji:"🦸", duration:90  },
   { id:"D", name:"詭廁",     branch:"大忠店", sbServiceId:14, sbLocationId:1, color:"#007A80", bg:"#E8F8F9", emoji:"🚽", duration:60  },
-  // 謎先生（location_id: 2）
   { id:"E", name:"詭獄",     branch:"謎先生", sbServiceId:11, sbLocationId:2, color:"#C07000", bg:"#FDF5E8", emoji:"⛓",  duration:90  },
   { id:"F", name:"詭獄加場", branch:"謎先生", sbServiceId:17, sbLocationId:2, color:"#A08000", bg:"#FDFAE8", emoji:"➕", duration:120 },
   { id:"G", name:"詭店",     branch:"謎先生", sbServiceId:16, sbLocationId:2, color:"#D94040", bg:"#FDF0F0", emoji:"🏚", duration:75  },
 ];
 
-// Service ID → Room ID 快速查表（Webhook 解析用）
 const SB_SERVICE_MAP = Object.fromEntries(ROOMS.map(r => [r.sbServiceId, r.id]));
 
 const SLOTS = [
@@ -42,7 +39,7 @@ const INIT_STAFF = [
   { id:5, name:"阿志", rate:175, color:"#8B5CF6", shift:"12:00", bonus:200,  deduct:0   },
 ];
 
-const ACCOUNTS = {
+const INIT_ACCOUNTS = {
   staff:  { pass:"staff123", role:"staff", staffId:1 },
   小美:   { pass:"mei123",   role:"staff", staffId:2 },
   阿偉:   { pass:"wei123",   role:"staff", staffId:3 },
@@ -58,27 +55,27 @@ function initSchedule() {
     SLOTS.forEach(t => { s[r.id][t] = { booked:false, staffId:null, clientName:"", source:"none" }; });
   });
   const demo = [
-    ["A","10:00",true,1,"王小華","simplybook"],  // 孤兒怨
-    ["A","14:00",true,3,"陳大明","simplybook"],  // 孤兒怨
-    ["B","11:00",true,2,"林美美","simplybook"],  // 屎力全開
-    ["B","17:00",true,5,"張志遠","manual"],       // 屎力全開
-    ["C","13:00",true,4,"黃小琳","simplybook"],  // 越獄者
-    ["D","10:30",true,1,"劉先生","simplybook"],  // 詭廁
-    ["E","15:00",true,3,"吳小姐","simplybook"],  // 詭獄
-    ["F","19:00",true,2,"趙大哥","simplybook"],  // 詭獄加場
-    ["G","20:00",true,5,"許小妹","simplybook"],  // 詭店
+    ["A","10:00",true,1,"王小華","simplybook"],
+    ["A","14:00",true,3,"陳大明","simplybook"],
+    ["B","11:00",true,2,"林美美","simplybook"],
+    ["B","17:00",true,5,"張志遠","manual"],
+    ["C","13:00",true,4,"黃小琳","simplybook"],
+    ["D","10:30",true,1,"劉先生","simplybook"],
+    ["E","15:00",true,3,"吳小姐","simplybook"],
+    ["F","19:00",true,2,"趙大哥","simplybook"],
+    ["G","20:00",true,5,"許小妹","simplybook"],
   ];
   demo.forEach(([r,t,b,sid,c,src]) => { s[r][t] = { booked:b, staffId:sid, clientName:c, source:src }; });
   return s;
 }
 
 const PUNCH_DEMO = [
-  { staffId:1, name:"小明", type:"in",  timeStr:"09:52", time:new Date(Date.now()-3600000), anomaly:null },
-  { staffId:2, name:"小美", type:"in",  timeStr:"10:07", time:new Date(Date.now()-3000000), anomaly:"遲到 7 分鐘" },
-  { staffId:3, name:"阿偉", type:"in",  timeStr:"09:58", time:new Date(Date.now()-3200000), anomaly:null },
+  { id:"p1", staffId:1, name:"小明", type:"in",  timeStr:"09:52", time:new Date(Date.now()-3600000), anomaly:null },
+  { id:"p2", staffId:2, name:"小美", type:"in",  timeStr:"10:07", time:new Date(Date.now()-3000000), anomaly:"遲到 7 分鐘" },
+  { id:"p3", staffId:3, name:"阿偉", type:"in",  timeStr:"09:58", time:new Date(Date.now()-3200000), anomaly:null },
 ];
 
-// ── 樣式系統（淺色）─────────────────────────────────────
+// ── 樣式系統 ─────────────────────────────────────────────
 const C = {
   bg:      "#F7F6F2",
   surface: "#FFFFFF",
@@ -121,11 +118,11 @@ const S = {
   label: { fontSize:11, color:C.muted, letterSpacing:"0.05em", marginBottom:8, fontWeight:500, textTransform:"uppercase" },
   badge: (type) => {
     const map = {
-      green:  [C.success.bg, C.success.text],
-      red:    [C.danger.bg,  C.danger.text],
-      amber:  [C.warning.bg, C.warning.text],
-      gray:   ["#F0EFE9",    C.muted],
-      blue:   [C.info.bg,    C.info.text],
+      green: [C.success.bg, C.success.text],
+      red:   [C.danger.bg,  C.danger.text],
+      amber: [C.warning.bg, C.warning.text],
+      gray:  ["#F0EFE9",    C.muted],
+      blue:  [C.info.bg,    C.info.text],
     };
     const [bg,color] = map[type] || map.gray;
     return { display:"inline-block", padding:"2px 10px", borderRadius:99, fontSize:11, fontWeight:500, background:bg, color, whiteSpace:"nowrap" };
@@ -158,6 +155,18 @@ const S = {
     background:C.surface, color:C.text,
     fontSize:13, marginBottom:10, outline:"none",
     fontFamily:"'Noto Sans TC', sans-serif",
+    boxSizing:"border-box",
+  },
+  modalOverlay: {
+    position:"fixed", inset:0, background:"rgba(0,0,0,0.35)",
+    display:"flex", alignItems:"flex-end", zIndex:100,
+  },
+  modalSheet: {
+    background:C.surface, borderRadius:"20px 20px 0 0",
+    padding:"1.5rem 1.25rem", width:"100%",
+    maxWidth:480, margin:"0 auto",
+    boxShadow:"0 -4px 24px rgba(0,0,0,0.1)",
+    maxHeight:"85vh", overflowY:"auto",
   },
 };
 
@@ -181,7 +190,6 @@ function getWeekDates(base) {
 }
 function staffById(id, list) { return list.find(s=>s.id===id); }
 
-// 從打卡紀錄計算已下班員工的工時（小時）
 function calcHours(staffId, logs) {
   let total = 0;
   const inLogs = logs.filter(l => l.staffId===staffId && l.type==="in");
@@ -192,7 +200,6 @@ function calcHours(staffId, logs) {
   return Math.round(total * 10) / 10;
 }
 
-// 取得目前在場員工（最後一筆是 in 且沒有對應 out）
 function getPresentStaff(logs) {
   const byStaff = {};
   logs.forEach(l => {
@@ -206,6 +213,11 @@ function getPresentStaff(logs) {
     })
     .map(entries => entries.find(e=>e.type==="in"));
 }
+
+let _nextStaffId = INIT_STAFF.length + 1;
+function nextStaffId() { return _nextStaffId++; }
+let _nextPunchId = 100;
+function nextPunchId() { return `p${_nextPunchId++}`; }
 
 // ── Toast ─────────────────────────────────────────────────
 function Toast({ msg, show }) {
@@ -233,14 +245,91 @@ function Avatar({ name, color, size=36 }) {
   );
 }
 
+// ── 員工編輯 Modal ────────────────────────────────────────
+function StaffEditModal({ staff, isNew, onSave, onClose }) {
+  const [name,     setName]     = useState(staff?.name     || "");
+  const [rate,     setRate]     = useState(String(staff?.rate  || 180));
+  const [shift,    setShift]    = useState(staff?.shift    || "10:00");
+  const [color,    setColor]    = useState(staff?.color    || "#3B82F6");
+  const [password, setPassword] = useState("");
+
+  const canSave = isNew ? name.trim() && password.trim() : true;
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.modalSheet} onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <div style={{ fontSize:15, fontWeight:500 }}>{isNew ? "新增員工" : `編輯員工：${staff.name}`}</div>
+          <button onClick={onClose} style={{ border:"none", background:C.tabBg, color:C.muted,
+            fontSize:16, cursor:"pointer", width:30, height:30, borderRadius:"50%", lineHeight:1 }}>×</button>
+        </div>
+
+        {isNew && (
+          <>
+            <div style={S.label}>姓名（同時作為登入帳號）</div>
+            <input style={S.inp} value={name} onChange={e=>setName(e.target.value)} placeholder="輸入姓名"/>
+          </>
+        )}
+
+        <div style={S.label}>時薪（元）</div>
+        <input style={S.inp} type="number" value={rate} onChange={e=>setRate(e.target.value)}/>
+
+        <div style={S.label}>班次開始時間</div>
+        <input style={S.inp} type="time" value={shift} onChange={e=>setShift(e.target.value)}/>
+
+        <div style={S.label}>顯示顏色</div>
+        <input style={{ ...S.inp, padding:4, height:42, cursor:"pointer" }} type="color"
+          value={color} onChange={e=>setColor(e.target.value)}/>
+
+        <div style={S.label}>{isNew ? "登入密碼" : "重設密碼（留空則不更改）"}</div>
+        <input style={S.inp} type="password" value={password}
+          onChange={e=>setPassword(e.target.value)}
+          placeholder={isNew ? "設定初始密碼" : "輸入新密碼（可留空）"}/>
+
+        <button
+          style={{ width:"100%", padding:13, border:"none", borderRadius:10, fontSize:14,
+            fontWeight:500, cursor: canSave ? "pointer" : "not-allowed",
+            background: canSave ? "#2A5CC0" : "#D0CEC8", color:"#FFF",
+            fontFamily:"'Noto Sans TC', sans-serif", opacity: canSave ? 1 : 0.6 }}
+          disabled={!canSave}
+          onClick={() => onSave({ name:name.trim(), rate:Number(rate)||180, shift, color, password })}>
+          {isNew ? "建立員工帳號" : "儲存變更"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── 刪除確認 Dialog ───────────────────────────────────────
+function ConfirmDialog({ message, onConfirm, onCancel }) {
+  return (
+    <div style={{ ...S.modalOverlay, alignItems:"center", padding:"0 1.5rem" }} onClick={onCancel}>
+      <div style={{ background:C.surface, borderRadius:16, padding:"1.5rem", width:"100%",
+        maxWidth:340, boxShadow:"0 4px 24px rgba(0,0,0,0.15)" }}
+        onClick={e=>e.stopPropagation()}>
+        <div style={{ fontSize:15, fontWeight:500, marginBottom:8 }}>確認刪除</div>
+        <div style={{ fontSize:13, color:C.muted, marginBottom:20, lineHeight:1.6 }}>{message}</div>
+        <div style={{ display:"flex", gap:10 }}>
+          <button style={{ flex:1, padding:11, border:`1px solid ${C.border}`, borderRadius:10,
+            background:"transparent", color:C.muted, fontSize:13, cursor:"pointer",
+            fontFamily:"'Noto Sans TC', sans-serif" }} onClick={onCancel}>取消</button>
+          <button style={{ flex:1, padding:11, border:"none", borderRadius:10,
+            background:C.danger.text, color:"#FFF", fontSize:13, cursor:"pointer",
+            fontFamily:"'Noto Sans TC', sans-serif", fontWeight:500 }} onClick={onConfirm}>確認刪除</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 登入畫面 ──────────────────────────────────────────────
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, accounts }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [err,  setErr]  = useState(false);
 
   const doLogin = () => {
-    const acc = ACCOUNTS[user];
+    const acc = accounts[user];
     if (!acc || acc.pass !== pass) {
       setErr(true);
       setTimeout(() => setErr(false), 2000);
@@ -284,24 +373,22 @@ function LoginScreen({ onLogin }) {
 }
 
 // ── 員工版 ────────────────────────────────────────────────
-function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
+function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }) {
   const [tab,        setTab]        = useState("punch");
-  const [punchState, setPunchState] = useState("out");  // "in" | "out"
+  const [punchState, setPunchState] = useState("out");
   const [clock,      setClock]      = useState(new Date());
   const [gpsOk,      setGpsOk]      = useState(false);
   const [toast,      setToast]      = useState({ show:false, msg:"" });
 
-  const me = INIT_STAFF.find(s => s.id === account.staffId);
+  const me = staffData.find(s => s.id === account.staffId);
   const myLogs = punchLogs.filter(l => l.staffId === account.staffId);
 
-  // FIX #4: useEffect with cleanup
   useEffect(() => {
     const tick = setInterval(() => setClock(new Date()), 1000);
     const gps  = setTimeout(() => setGpsOk(true), 1800);
     return () => { clearInterval(tick); clearTimeout(gps); };
   }, []);
 
-  // Sync punchState with logs (if admin also punches this staff)
   useEffect(() => {
     if (myLogs.length === 0) { setPunchState("out"); return; }
     const last = [...myLogs].sort((a,b)=>a.time-b.time).pop();
@@ -326,8 +413,7 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
     const timeStr = now.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});
     const newType = punchState === "out" ? "in" : "out";
     const anomaly = newType === "in" && me ? checkAnomaly(me, timeStr) : null;
-    onPunch({ staffId:me.id, name:me.name, type:newType, timeStr, time:now, anomaly, color:me.color });
-    // FIX #1: show toast
+    onPunch({ id:nextPunchId(), staffId:me.id, name:me.name, type:newType, timeStr, time:now, anomaly, color:me.color });
     showToast(newType === "in" ? `上班打卡成功 ${timeStr} ✓` : `下班打卡成功 ${timeStr} ✓`);
   };
 
@@ -344,10 +430,8 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
     return result;
   }, [schedule, account.staffId]);
 
-  // FIX #7: calculate hours from punch logs
   const salaryInfo = useMemo(() => {
     const workedH = calcHours(account.staffId, punchLogs);
-    // Use estimated 38.5h if no completed shifts yet (demo)
     const hours = workedH > 0 ? workedH : 38.5;
     const base   = Math.round(hours * (me?.rate || 180));
     const bonus  = me?.bonus  || 0;
@@ -367,7 +451,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
       <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet"/>
       <Toast msg={toast.msg} show={toast.show} />
 
-      {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
         padding:"1.25rem 1.25rem 0.5rem", borderBottom:`1px solid ${C.border}`, marginBottom:"0.75rem" }}>
         <div>
@@ -384,7 +467,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
           ))}
         </div>
 
-        {/* 打卡 */}
         {tab==="punch" && (
           <div>
             <div style={S.card}>
@@ -394,7 +476,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
               <div style={{ fontSize:12, color:C.muted, textAlign:"center", marginBottom:16 }}>
                 {fmtDate(clock)}
               </div>
-              {/* GPS 狀態 */}
               <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
                 background: gpsOk ? C.success.bg : C.warning.bg,
                 borderRadius:8, marginBottom:14, fontSize:12,
@@ -403,7 +484,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
                   background: gpsOk ? "#0F9B6A" : "#C07000" }}/>
                 {gpsOk ? "GPS 已確認：台中市門市 (43m)" : "GPS 定位確認中..."}
               </div>
-              {/* 今日排班 */}
               <div style={S.label}>今日排班</div>
               <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
                 {myShifts.slice(0,4).map((s,i) => (
@@ -414,7 +494,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
                 ))}
                 {myShifts.length===0 && <span style={{ fontSize:12, color:C.hint }}>今日無排班</span>}
               </div>
-              {/* FIX #5: disabled 樣式 */}
               <button style={S.punchBtn(punchState==="out"?"in":"out", !gpsOk)}
                 onClick={handlePunch} disabled={!gpsOk}>
                 {!gpsOk ? "等待 GPS 驗證..." : punchState==="out" ? "上班打卡" : "下班打卡"}
@@ -438,7 +517,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
           </div>
         )}
 
-        {/* 班表 */}
         {tab==="schedule" && (
           <div style={S.card}>
             <div style={S.label}>本週我的班次</div>
@@ -460,7 +538,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
           </div>
         )}
 
-        {/* 薪資 */}
         {tab==="salary" && (
           <div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:"1rem" }}>
@@ -493,7 +570,6 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
           </div>
         )}
 
-        {/* 通知 */}
         {tab==="notif" && (
           <div style={S.card}>
             <div style={S.label}>最新通知</div>
@@ -525,17 +601,22 @@ function StaffApp({ account, schedule, punchLogs, onPunch, onLogout }) {
 }
 
 // ── 管理者版 ──────────────────────────────────────────────
-function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
-  const [tab,          setTab]         = useState("overview");
-  const [viewMode,     setViewMode]    = useState("timeline");
-  const [selectedDate, setSelectedDate]= useState(new Date());
-  const [selectedRoom, setSelectedRoom]= useState("A");
-  const [selectedBranch, setSelectedBranch] = useState("大忠店");
-  const [modal,        setModal]       = useState(null);
-  const [staffData,    setStaffData]   = useState(INIT_STAFF.map(s=>({...s})));
-  const [toast,        setToast]       = useState({ show:false, msg:"" });
-  const [sbLogin,      setSbLogin]     = useState(SB_CONFIG.companyLogin);
-  const [sbKey,        setSbKey]       = useState("");
+function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout }) {
+  const [tab,            setTab]           = useState("overview");
+  const [viewMode,       setViewMode]      = useState("timeline");
+  const [selectedDate,   setSelectedDate]  = useState(new Date());
+  const [selectedRoom,   setSelectedRoom]  = useState("A");
+  const [selectedBranch, setSelectedBranch]= useState("大忠店");
+  const [modal,          setModal]         = useState(null);
+  const [staffData,      setStaffData]     = useState(INIT_STAFF.map(s=>({...s})));
+  const [toast,          setToast]         = useState({ show:false, msg:"" });
+  const [sbLogin,        setSbLogin]       = useState(SB_CONFIG.companyLogin);
+  const [sbKey,          setSbKey]         = useState("");
+  const [sbStatus,       setSbStatus]      = useState(null); // null|"loading"|"ok"|"error"
+  const [syncStatus,     setSyncStatus]    = useState(null); // null|"loading"|"ok"|"error"
+  const [editStaff,      setEditStaff]     = useState(null); // { staff, isNew }
+  const [deleteStaffId,  setDeleteStaffId] = useState(null);
+  const [confirmedIds,   setConfirmedIds]  = useState(new Set());
 
   const weekDates = getWeekDates(selectedDate);
 
@@ -553,9 +634,100 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
     showToast("已儲存");
   }
 
-  const branchRooms = useMemo(() => ROOMS.filter(r => r.branch === selectedBranch), [selectedBranch]);
+  // SimplyBook 測試連線
+  async function testSimplyBookConn() {
+    setSbStatus("loading");
+    try {
+      const r = await fetch(SB_CONFIG.backendUrl + "/api/health", { signal: AbortSignal.timeout(8000) });
+      setSbStatus(r.ok ? "ok" : "error");
+    } catch {
+      setSbStatus("error");
+    }
+  }
 
-  const bookedSlots = useMemo(() => {
+  // 立即同步今日預約
+  async function syncTodayBookings() {
+    setSyncStatus("loading");
+    try {
+      const r = await fetch(`${SB_CONFIG.backendUrl}/api/bookings`, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      // 將後端回傳的預約寫入 schedule
+      const bookings = Array.isArray(data) ? data : (data.bookings || []);
+      if (bookings.length > 0) {
+        setSchedule(prev => {
+          const next = { ...prev };
+          bookings.forEach(b => {
+            const roomId = SB_SERVICE_MAP[b.service_id];
+            const time   = b.start_time?.slice(0,5);
+            if (roomId && time && next[roomId]?.[time] !== undefined) {
+              next[roomId] = {
+                ...next[roomId],
+                [time]: { booked:true, staffId:null, clientName:b.client_name||"", source:"simplybook" }
+              };
+            }
+          });
+          return next;
+        });
+        showToast(`同步完成，共 ${bookings.length} 筆預約`);
+      } else {
+        showToast("同步完成，今日無預約");
+      }
+      setSyncStatus("ok");
+    } catch {
+      setSyncStatus("error");
+      showToast("同步失敗，請檢查後端連線");
+    }
+  }
+
+  // 儲存員工編輯
+  function handleSaveStaff({ name, rate, shift, color, password }) {
+    if (editStaff.isNew) {
+      const newId = nextStaffId();
+      setStaffData(prev => [...prev, { id:newId, name, rate, color, shift, bonus:0, deduct:0 }]);
+      setAccounts(prev => ({ ...prev, [name]: { pass:password, role:"staff", staffId:newId } }));
+      showToast(`已建立員工帳號：${name}`);
+    } else {
+      const s = editStaff.staff;
+      setStaffData(prev => prev.map(x => x.id===s.id ? { ...x, rate, shift, color } : x));
+      if (password) {
+        // 找到此員工對應的帳號並更新密碼
+        setAccounts(prev => {
+          const next = { ...prev };
+          Object.keys(next).forEach(k => {
+            if (next[k].staffId === s.id) next[k] = { ...next[k], pass:password };
+          });
+          return next;
+        });
+        showToast(`已更新 ${s.name} 的資料和密碼`);
+      } else {
+        showToast(`已更新 ${s.name} 的資料`);
+      }
+    }
+    setEditStaff(null);
+  }
+
+  // 刪除員工
+  function handleDeleteStaff() {
+    const id = deleteStaffId;
+    const s = staffData.find(x => x.id === id);
+    setStaffData(prev => prev.filter(x => x.id !== id));
+    setAccounts(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => { if (next[k].staffId === id) delete next[k]; });
+      return next;
+    });
+    setDeleteStaffId(null);
+    showToast(`已刪除員工：${s?.name}`);
+  }
+
+  // 確認異常打卡
+  function confirmAnomaly(punchId) {
+    setConfirmedIds(prev => new Set([...prev, punchId]));
+  }
+
+  const branchRooms   = useMemo(() => ROOMS.filter(r => r.branch === selectedBranch), [selectedBranch]);
+  const bookedSlots   = useMemo(() => {
     const result = {};
     SLOTS.forEach(t => {
       const rooms = branchRooms.filter(r => schedule[r.id]?.[t]?.booked);
@@ -564,20 +736,19 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
     return result;
   }, [schedule, branchRooms]);
 
-  // FIX #2 & #6: 正確從 punchLogs 計算在場員工
-  const presentStaff = useMemo(() => getPresentStaff(punchLogs), [punchLogs]);
-  const anomalies    = useMemo(() => punchLogs.filter(l=>l.anomaly), [punchLogs]);
+  const presentStaff  = useMemo(() => getPresentStaff(punchLogs), [punchLogs]);
+  const anomalies     = useMemo(() => punchLogs.filter(l=>l.anomaly), [punchLogs]);
+  const pendingCount  = useMemo(() => anomalies.filter(l=>!confirmedIds.has(l.id)).length, [anomalies, confirmedIds]);
 
   const totalBookings = useMemo(() =>
     Object.values(schedule).reduce((a,rm)=>a+Object.values(rm).filter(c=>c.booked).length,0),
     [schedule]
   );
 
-  // FIX #7: 從打卡紀錄計算薪資
   const salaryRows = useMemo(() => {
     return staffData.map(s => {
       const worked = calcHours(s.id, punchLogs);
-      const hours  = worked > 0 ? worked : 40; // fallback for demo
+      const hours  = worked > 0 ? worked : 40;
       const base   = Math.round(hours * s.rate);
       const net    = base + s.bonus - s.deduct;
       return { ...s, hours, base, net };
@@ -597,19 +768,34 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
       <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet"/>
       <Toast msg={toast.msg} show={toast.show} />
 
-      {/* Modal */}
       {modal && (
         <CellModal
           cell={schedule[modal.roomId]?.[modal.time]}
           room={ROOMS.find(r=>r.id===modal.roomId)}
           time={modal.time}
-          staffList={INIT_STAFF}
+          staffList={staffData}
           onSave={(data)=>updateCell(modal.roomId, modal.time, data)}
           onClose={()=>setModal(null)}
         />
       )}
 
-      {/* Header */}
+      {editStaff && (
+        <StaffEditModal
+          staff={editStaff.staff}
+          isNew={editStaff.isNew}
+          onSave={handleSaveStaff}
+          onClose={()=>setEditStaff(null)}
+        />
+      )}
+
+      {deleteStaffId && (
+        <ConfirmDialog
+          message={`確定要刪除員工「${staffData.find(s=>s.id===deleteStaffId)?.name}」？此操作無法復原，相關登入帳號也會一併移除。`}
+          onConfirm={handleDeleteStaff}
+          onCancel={()=>setDeleteStaffId(null)}
+        />
+      )}
+
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
         padding:"1.25rem 1.25rem 0.5rem", borderBottom:`1px solid ${C.border}`, marginBottom:"0.75rem" }}>
         <div>
@@ -644,13 +830,22 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               ))}
             </div>
 
-            {/* FIX #2: 使用 punchLogs 而非 PUNCH_DEMO */}
+            {/* 快捷：立即同步 */}
+            <button
+              onClick={syncTodayBookings}
+              disabled={syncStatus==="loading"}
+              style={{ ...S.ghostBtn, width:"100%", padding:"10px 0", textAlign:"center",
+                marginBottom:"1rem", color: C.info.text, borderColor: C.info.text+"44",
+                background: C.info.bg, opacity: syncStatus==="loading" ? 0.6 : 1 }}>
+              {syncStatus==="loading" ? "同步中..." : "⟳  立即同步今日預約"}
+            </button>
+
             <div style={S.card}>
               <div style={S.label}>目前在場員工</div>
               {presentStaff.length === 0
                 ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>目前無人在場</div>
                 : presentStaff.map((l,i) => {
-                    const sf = staffById(l.staffId, INIT_STAFF);
+                    const sf = staffById(l.staffId, staffData);
                     return (
                       <div key={i} style={S.row(i===presentStaff.length-1)}>
                         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -672,7 +867,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
         {/* ── 排班 ── */}
         {tab==="schedule" && (
           <div>
-            {/* 分店切換 */}
             <div style={{ display:"flex", gap:6, marginBottom:"0.75rem" }}>
               {BRANCHES.map(b => (
                 <button key={b} onClick={()=>{ setSelectedBranch(b); setSelectedRoom(ROOMS.find(r=>r.branch===b)?.id||"A"); }} style={{
@@ -686,7 +880,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               ))}
             </div>
 
-            {/* 日期列 */}
             <div style={{ display:"flex", gap:4, overflowX:"auto", marginBottom:"0.75rem", paddingBottom:4 }}>
               {weekDates.map((d,i) => {
                 const sel = d.toDateString()===selectedDate.toDateString();
@@ -709,7 +902,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               })}
             </div>
 
-            {/* 視圖切換 */}
             <div style={{ display:"flex", gap:4, marginBottom:"0.75rem" }}>
               {[["timeline","時間軸"],["heatmap","熱圖"],["single","單場"]].map(([v,l]) => (
                 <button key={v} style={{ ...S.tab(viewMode===v), flex:"none", padding:"6px 14px", fontSize:12 }}
@@ -717,7 +909,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               ))}
             </div>
 
-            {/* 時間軸視圖 */}
             {viewMode==="timeline" && (
               <div style={S.card}>
                 {Object.keys(bookedSlots).length === 0
@@ -728,7 +919,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
                       <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
                         {rooms.map(r => {
                           const cell = schedule[r.id][time];
-                          const sf   = staffById(cell.staffId, INIT_STAFF);
+                          const sf   = staffById(cell.staffId, staffData);
                           return (
                             <button key={r.id} onClick={()=>setModal({roomId:r.id,time})} style={{
                               padding:"6px 10px", borderRadius:10, border:`1px solid ${r.color}30`,
@@ -759,7 +950,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               </div>
             )}
 
-            {/* 熱圖視圖 — FIX #3: 使用 Fragment with key */}
             {viewMode==="heatmap" && (
               <div style={{ ...S.card, overflowX:"auto" }}>
                 <div style={{
@@ -767,14 +957,12 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
                   gridTemplateColumns:`50px repeat(${branchRooms.length},1fr)`,
                   gap:2, minWidth:280,
                 }}>
-                  {/* 標頭 */}
                   <div/>
                   {branchRooms.map(r => (
                     <div key={r.id} style={{ fontSize:10, color:r.color, textAlign:"center", fontWeight:600, paddingBottom:6 }}>
                       {r.name.slice(0,2)}
                     </div>
                   ))}
-                  {/* 資料列 — FIX #3: Fragment with key */}
                   {SLOTS.map(t => (
                     <Fragment key={t}>
                       <div style={{ fontSize:10, color:C.muted, display:"flex", alignItems:"center", paddingRight:4 }}>{t}</div>
@@ -794,7 +982,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
               </div>
             )}
 
-            {/* 單場視圖 */}
             {viewMode==="single" && (
               <div>
                 <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:"0.75rem" }}>
@@ -813,7 +1000,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
                   {SLOTS.map((t,i) => {
                     const cell = schedule[selectedRoom]?.[t];
                     const room = ROOMS.find(r=>r.id===selectedRoom);
-                    const sf   = staffById(cell?.staffId, INIT_STAFF);
+                    const sf   = staffById(cell?.staffId, staffData);
                     return (
                       <div key={t} onClick={()=>setModal({roomId:selectedRoom,time:t})}
                         style={{ ...S.row(i===SLOTS.length-1), cursor:"pointer" }}>
@@ -838,36 +1025,64 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
           </div>
         )}
 
-        {/* ── 打卡管理 — FIX #2: 使用 punchLogs prop ── */}
+        {/* ── 打卡管理 ── */}
         {tab==="clock" && (
           <div>
             <div style={S.card}>
               <div style={S.label}>今日打卡紀錄</div>
               {punchLogs.length === 0
                 ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>尚無打卡紀錄</div>
-                : [...punchLogs].reverse().map((l,i,arr) => (
-                  <div key={i} style={S.row(i===arr.length-1)}>
-                    <div>
-                      <div style={{ fontSize:13, fontWeight:500 }}>{l.name}</div>
-                      <div style={{ fontSize:11, color:C.muted }}>{l.type==="in"?"上班":"下班"} {l.timeStr}</div>
-                    </div>
-                    <span style={S.badge(l.anomaly?"amber": l.type==="in"?"green":"gray")}>
-                      {l.anomaly || (l.type==="in"?"正常":"下班")}
-                    </span>
-                  </div>
-                ))
+                : [...punchLogs].reverse().map((l,i,arr) => {
+                    const isConfirmed = confirmedIds.has(l.id);
+                    return (
+                      <div key={l.id||i} style={{ ...S.row(i===arr.length-1), gap:8 }}>
+                        <div style={{ flex:1, opacity: isConfirmed ? 0.45 : 1 }}>
+                          <div style={{ fontSize:13, fontWeight:500 }}>{l.name}</div>
+                          <div style={{ fontSize:11, color:C.muted }}>{l.type==="in"?"上班":"下班"} {l.timeStr}</div>
+                          {l.anomaly && (
+                            <div style={{ fontSize:11, color: isConfirmed ? C.hint : C.warning.text, marginTop:2 }}>
+                              {l.anomaly}{isConfirmed ? " · 已確認" : ""}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          {l.anomaly && !isConfirmed && (
+                            <button
+                              onClick={() => confirmAnomaly(l.id)}
+                              style={{ padding:"4px 10px", borderRadius:8, border:`1px solid ${C.warning.text}44`,
+                                background:C.warning.bg, color:C.warning.text, fontSize:11,
+                                cursor:"pointer", fontFamily:"'Noto Sans TC', sans-serif", fontWeight:500,
+                                whiteSpace:"nowrap" }}>
+                              確認
+                            </button>
+                          )}
+                          <span style={S.badge(
+                            isConfirmed ? "gray" :
+                            l.anomaly ? "amber" :
+                            l.type==="in" ? "green" : "gray"
+                          )}>
+                            {isConfirmed ? "已確認" : l.anomaly || (l.type==="in"?"正常":"下班")}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
               }
             </div>
             <div style={S.card}>
               <div style={S.label}>今日異常摘要</div>
               {[
-                ["遲到", anomalies.filter(l=>l.anomaly?.includes("遲到")).length],
-                ["早退", anomalies.filter(l=>l.anomaly?.includes("早退")).length],
-                ["缺勤", 0],
+                ["遲到",   anomalies.filter(l=>l.anomaly?.includes("遲到")).length],
+                ["早退",   anomalies.filter(l=>l.anomaly?.includes("早退")).length],
+                ["缺勤",   0],
+                ["待確認", pendingCount],
               ].map(([k,v],i,arr) => (
                 <div key={k} style={{ ...S.row(i===arr.length-1), fontSize:13 }}>
                   <span style={{ color:C.muted }}>{k}</span>
-                  <span style={{ fontWeight:500, color: v>0 ? C.danger.text : C.text }}>{v} 件</span>
+                  <span style={{ fontWeight:500,
+                    color: k==="待確認" && v>0 ? C.info.text : v>0 ? C.danger.text : C.text }}>
+                    {v} {k==="待確認" ? "筆" : "件"}
+                  </span>
                 </div>
               ))}
             </div>
@@ -915,40 +1130,83 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
         {/* ── 設定 ── */}
         {tab==="settings" && (
           <div>
+            {/* SimplyBook 串接 */}
             <div style={S.card}>
               <div style={S.label}>SimplyBook 串接</div>
               <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>Company Login（網址前綴）</div>
               <input style={S.inp} value={sbLogin} onChange={e=>setSbLogin(e.target.value)} placeholder="bglescape"/>
               <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>API Key</div>
               <input style={S.inp} type="password" value={sbKey} onChange={e=>setSbKey(e.target.value)} placeholder="貼上 API Key"/>
+
+              {/* 連線狀態 */}
               <div style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 12px",
-                background: sbLogin&&sbKey ? C.success.bg : "#FEF8E7",
+                background: sbStatus==="ok" ? C.success.bg : sbStatus==="error" ? C.danger.bg : "#FEF8E7",
                 borderRadius:8, marginBottom:12, fontSize:12,
-                color: sbLogin&&sbKey ? C.success.text : C.warning.text }}>
+                color: sbStatus==="ok" ? C.success.text : sbStatus==="error" ? C.danger.text : C.warning.text }}>
                 <div style={{ width:7,height:7,borderRadius:"50%", flexShrink:0,
-                  background: sbLogin&&sbKey ? "#0F9B6A" : "#C07000" }}/>
-                {sbLogin&&sbKey ? "設定完成，可測試連線" : "尚未填入 SimplyBook 資訊"}
+                  background: sbStatus==="ok" ? "#0F9B6A" : sbStatus==="error" ? C.danger.text : "#C07000" }}/>
+                {sbStatus==="ok"      ? "後端連線正常 ✓" :
+                 sbStatus==="error"   ? "連線失敗，請確認後端服務" :
+                 sbStatus==="loading" ? "測試中..." :
+                 sbLogin&&sbKey       ? "設定完成，點下方按鈕測試連線" : "尚未填入 SimplyBook 資訊"}
               </div>
+
+              <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+                <button
+                  onClick={testSimplyBookConn}
+                  disabled={sbStatus==="loading"}
+                  style={{ flex:1, ...S.ghostBtn, padding:10, textAlign:"center",
+                    opacity: sbStatus==="loading" ? 0.6 : 1 }}>
+                  {sbStatus==="loading" ? "測試中..." : "測試 SimplyBook 連線"}
+                </button>
+                <button
+                  onClick={syncTodayBookings}
+                  disabled={syncStatus==="loading"}
+                  style={{ flex:1, ...S.ghostBtn, padding:10, textAlign:"center",
+                    color:C.info.text, borderColor:C.info.text+"44", background:C.info.bg,
+                    opacity: syncStatus==="loading" ? 0.6 : 1 }}>
+                  {syncStatus==="loading" ? "同步中..." : "立即同步今日預約"}
+                </button>
+              </div>
+
               <div style={{ fontSize:11, color:C.muted, marginBottom:8 }}>Webhook URL（填入 SimplyBook 後台）</div>
               <div style={{ background:C.tabBg, borderRadius:8, padding:"9px 12px", fontSize:11,
                 color:C.text, fontFamily:"monospace", marginBottom:12, wordBreak:"break-all" }}>
-                https://your-backend.com/api/webhook
+                {SB_CONFIG.backendUrl}/api/webhook
               </div>
               <button style={{ ...S.ghostBtn, width:"100%", padding:10, textAlign:"center" }}
                 onClick={()=>showToast("設定已儲存")}>儲存設定</button>
             </div>
+
+            {/* 員工帳號管理 */}
             <div style={S.card}>
               <div style={S.label}>員工帳號管理</div>
-              {INIT_STAFF.map((s,i) => (
-                <div key={s.id} style={S.row(i===INIT_STAFF.length-1)}>
+              {staffData.map((s,i) => (
+                <div key={s.id} style={S.row(i===staffData.length-1)}>
                   <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                     <Avatar name={s.name} color={s.color} size={28}/>
-                    <span style={{ fontSize:13 }}>{s.name}</span>
+                    <div>
+                      <div style={{ fontSize:13 }}>{s.name}</div>
+                      <div style={{ fontSize:10, color:C.hint }}>${s.rate}/h · {s.shift} 起班</div>
+                    </div>
                   </div>
-                  <button style={S.ghostBtn} onClick={()=>showToast(`已重設 ${s.name} 的密碼`)}>重設密碼</button>
+                  <div style={{ display:"flex", gap:6 }}>
+                    <button
+                      style={{ ...S.ghostBtn, padding:"5px 10px", color:C.info.text, borderColor:C.info.text+"44", background:C.info.bg }}
+                      onClick={()=>setEditStaff({ staff:s, isNew:false })}>
+                      編輯
+                    </button>
+                    <button
+                      style={{ ...S.ghostBtn, padding:"5px 10px", color:C.danger.text, borderColor:C.danger.text+"44", background:C.danger.bg }}
+                      onClick={()=>setDeleteStaffId(s.id)}>
+                      刪除
+                    </button>
+                  </div>
                 </div>
               ))}
-              <button style={{ ...S.ghostBtn, width:"100%", padding:10, marginTop:10, textAlign:"center" }}>
+              <button
+                style={{ ...S.ghostBtn, width:"100%", padding:10, marginTop:10, textAlign:"center" }}
+                onClick={()=>setEditStaff({ staff:null, isNew:true })}>
                 + 新增員工帳號
               </button>
             </div>
@@ -966,20 +1224,15 @@ function AdminApp({ schedule, setSchedule, punchLogs, onLogout }) {
   );
 }
 
-// ── 編輯 Modal ────────────────────────────────────────────
+// ── 編輯 Modal（排班格）────────────────────────────────────
 function CellModal({ cell, room, time, staffList, onSave, onClose }) {
   const [booked,     setBooked]     = useState(cell?.booked     || false);
   const [clientName, setClientName] = useState(cell?.clientName || "");
   const [staffId,    setStaffId]    = useState(cell?.staffId    || null);
 
   return (
-    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.35)", display:"flex",
-      alignItems:"flex-end", zIndex:100 }} onClick={onClose}>
-      <div style={{ background:C.surface, borderRadius:"20px 20px 0 0", padding:"1.5rem 1.25rem",
-        width:"100%", maxWidth:480, margin:"0 auto", boxShadow:"0 -4px 24px rgba(0,0,0,0.1)" }}
-        onClick={e=>e.stopPropagation()}>
-
-        {/* Modal 頂部 */}
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.modalSheet} onClick={e=>e.stopPropagation()}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
           <div>
             <div style={{ fontSize:15, fontWeight:500, color:room.color }}>{room.name}</div>
@@ -989,7 +1242,6 @@ function CellModal({ cell, room, time, staffList, onSave, onClose }) {
             fontSize:16, cursor:"pointer", width:30, height:30, borderRadius:"50%", lineHeight:1 }}>×</button>
         </div>
 
-        {/* 預約狀態切換 */}
         <div style={{ display:"flex", gap:8, marginBottom:14 }}>
           {[true, false].map(v => (
             <button key={String(v)} onClick={()=>setBooked(v)} style={{
@@ -1037,15 +1289,20 @@ function CellModal({ cell, room, time, staffList, onSave, onClose }) {
 
 // ── 主 App ────────────────────────────────────────────────
 export default function App() {
-  const [user,       setUser]      = useState(null);
-  const [schedule,   setSchedule]  = useState(initSchedule);
-  const [punchLogs,  setPunchLogs] = useState(PUNCH_DEMO);
+  const [user,      setUser]      = useState(null);
+  const [schedule,  setSchedule]  = useState(initSchedule);
+  const [punchLogs, setPunchLogs] = useState(PUNCH_DEMO);
+  const [accounts,  setAccounts]  = useState(() => ({...INIT_ACCOUNTS}));
 
   const handleLogin  = useCallback((acc, username) => setUser({ ...acc, username }), []);
   const handleLogout = useCallback(() => setUser(null), []);
   const handlePunch  = useCallback((entry) => setPunchLogs(prev => [...prev, entry]), []);
 
-  if (!user) return <LoginScreen onLogin={handleLogin}/>;
+  // 取出最新的 staffData 以傳給 StaffApp（讓薪資/顏色同步更新）
+  // 暫時用 INIT_STAFF 作為 staffData 來源，由 AdminApp 管理
+  const [staffData, setStaffData] = useState(INIT_STAFF.map(s=>({...s})));
+
+  if (!user) return <LoginScreen onLogin={handleLogin} accounts={accounts}/>;
 
   if (user.role === "staff") {
     return (
@@ -1053,6 +1310,7 @@ export default function App() {
         account={user}
         schedule={schedule}
         punchLogs={punchLogs}
+        staffData={staffData}
         onPunch={handlePunch}
         onLogout={handleLogout}
       />
@@ -1064,6 +1322,9 @@ export default function App() {
       schedule={schedule}
       setSchedule={setSchedule}
       punchLogs={punchLogs}
+      setPunchLogs={setPunchLogs}
+      accounts={accounts}
+      setAccounts={setAccounts}
       onLogout={handleLogout}
     />
   );
