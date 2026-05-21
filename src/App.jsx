@@ -8,6 +8,37 @@ const SB_CONFIG = {
   backendUrl: "https://bgl-backend-new.vercel.app",
 };
 
+// ── GAS 後端（排班 + 打卡 + 員工）─────────────────────────
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwb319Bqz-_p-fDj_tIm62jaIRpMJ0mypwrOTGvyHUxR-WOhQxZ0ri8GS8uB2hFkfUzoQ/exec";
+async function callGAS(action, payload = {}) {
+  const res = await fetch(GAS_URL, {
+    method: "POST",
+    body: JSON.stringify({ action, payload }),
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error("GAS HTTP " + res.status);
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || "GAS error");
+  return json.data;
+}
+
+// 把 GAS 員工資料轉成前端 StaffData 格式
+const STAFF_COLORS = ["#3B82F6","#EC4899","#10B981","#F59E0B","#8B5CF6","#06B6D4","#F97316","#84CC16","#A855F7","#14B8A6","#EAB308","#F43F5E","#6366F1","#22D3EE","#D946EF"];
+function gasStaffToLocal(gasStaff, idx) {
+  return {
+    id: gasStaff.id,           // 字串：EMP001
+    name: gasStaff.name,
+    rate: gasStaff.rate || 200,
+    color: STAFF_COLORS[idx % STAFF_COLORS.length],
+    shift: "10:00",            // 預設，可日後從排班讀
+    bonus: 0,
+    deduct: 0,
+    role: gasStaff.role,
+    branch: gasStaff.branch,
+    themes: gasStaff.themes,
+  };
+}
+
 // ── 資料定義 ──────────────────────────────────────────────
 const BRANCHES = ["大忠店", "謎先生"];
 
@@ -323,7 +354,7 @@ function ConfirmDialog({ message, onConfirm, onCancel }) {
 }
 
 // ── 登入畫面 ──────────────────────────────────────────────
-function LoginScreen({ onLogin, accounts }) {
+function LoginScreen({ onLogin, accounts, liveMode, gasError }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [err,  setErr]  = useState(false);
@@ -345,6 +376,14 @@ function LoginScreen({ onLogin, accounts }) {
         <div style={{ fontSize:40, marginBottom:12 }}>🔐</div>
         <div style={{ fontSize:24, fontWeight:700, color:C.text }}>密室排班系統</div>
         <div style={{ fontSize:12, color:C.hint, marginTop:4 }}>Escape Room Scheduler</div>
+        <div style={{ display:"inline-flex", alignItems:"center", gap:6, marginTop:10,
+          padding:"4px 10px", borderRadius:99, fontSize:11,
+          background: liveMode ? "#EDFBF4" : "#FEF8E7",
+          color: liveMode ? "#1A7A4A" : "#8A6200" }}>
+          <span style={{ width:6, height:6, borderRadius:"50%",
+            background: liveMode ? "#0F9B6A" : "#C07000" }}/>
+          {liveMode ? "已連線 GAS Sheets（真實員工資料）" : (gasError ? `Demo 模式（${gasError}）` : "Demo 模式（離線測試）")}
+        </div>
       </div>
       <div style={S.card}>
         {err && (
@@ -1293,16 +1332,59 @@ export default function App() {
   const [schedule,  setSchedule]  = useState(initSchedule);
   const [punchLogs, setPunchLogs] = useState(PUNCH_DEMO);
   const [accounts,  setAccounts]  = useState(() => ({...INIT_ACCOUNTS}));
+  const [staffData, setStaffData] = useState(INIT_STAFF.map(s=>({...s})));
+  const [liveMode,  setLiveMode]  = useState(false); // true = GAS Sheets 連線中
+  const [gasError,  setGasError]  = useState(null);
+
+  // 啟動時從 GAS 載入真實員工 + 帳號（預設密碼＝員工ID）
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const data = await callGAS("getStaffPublic");
+        if (cancel) return;
+        const list = (data?.staff || []).filter(s => s.id);
+        if (list.length === 0) throw new Error("GAS 沒回員工");
+        const realStaff = list.map(gasStaffToLocal);
+        const realAccounts = {
+          admin: { pass: "admin999", role: "admin" }, // admin 帳號仍走本地
+        };
+        list.forEach(s => {
+          realAccounts[s.id]   = { pass: s.id, role: "staff", staffId: s.id }; // 預設密碼 = ID
+          realAccounts[s.name] = { pass: s.id, role: "staff", staffId: s.id }; // 也可用姓名登入
+        });
+        setStaffData(realStaff);
+        setAccounts(realAccounts);
+        setLiveMode(true);
+        setGasError(null);
+      } catch (e) {
+        setGasError(e.message);
+        // 留在 demo 模式
+      }
+    })();
+    return () => { cancel = true; };
+  }, []);
 
   const handleLogin  = useCallback((acc, username) => setUser({ ...acc, username }), []);
   const handleLogout = useCallback(() => setUser(null), []);
-  const handlePunch  = useCallback((entry) => setPunchLogs(prev => [...prev, entry]), []);
 
-  // 取出最新的 staffData 以傳給 StaffApp（讓薪資/顏色同步更新）
-  // 暫時用 INIT_STAFF 作為 staffData 來源，由 AdminApp 管理
-  const [staffData, setStaffData] = useState(INIT_STAFF.map(s=>({...s})));
+  // 打卡：同時更新本地 UI 與 GAS Sheets（liveMode 時）
+  const handlePunch = useCallback(async (entry) => {
+    setPunchLogs(prev => [...prev, entry]);
+    if (!liveMode) return;
+    try {
+      await callGAS("punchClock", {
+        empId: String(entry.staffId),
+        type: entry.type,
+        note: entry.anomaly || "",
+        source: "Vercel",
+      });
+    } catch (e) {
+      console.warn("GAS punchClock 失敗（本地仍記錄）:", e.message);
+    }
+  }, [liveMode]);
 
-  if (!user) return <LoginScreen onLogin={handleLogin} accounts={accounts}/>;
+  if (!user) return <LoginScreen onLogin={handleLogin} accounts={accounts} liveMode={liveMode} gasError={gasError}/>;
 
   if (user.role === "staff") {
     return (
