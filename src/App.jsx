@@ -34,6 +34,20 @@ const SHIFT_STATUS_UI = {
   done:           { icon:'✅', label:'已完成', color:'#1A7A4A' },
 };
 
+// 主題顏色（給行事曆色點用）
+const THEME_COLOR = {
+  '詭店':     '#D94040',
+  '詭獄':     '#C07000',
+  '詭獄加場': '#A08000',
+  '詭廁':     '#007A80',
+  '越獄者':   '#2E8B2E',
+  '屎力全開': '#7B4FA6',
+  '孤兒怨':   '#B04070',
+  '桌遊':     '#9A8F7D',
+  '外婆':     '#5B8A3A',
+};
+function themeColor(t) { return THEME_COLOR[t] || '#7A786E'; }
+
 // 把 GAS 員工資料轉成前端 StaffData 格式
 const STAFF_COLORS = ["#3B82F6","#EC4899","#10B981","#F59E0B","#8B5CF6","#06B6D4","#F97316","#84CC16","#A855F7","#14B8A6","#EAB308","#F43F5E","#6366F1","#22D3EE","#D946EF"];
 function gasStaffToLocal(gasStaff, idx) {
@@ -431,19 +445,26 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   const [gpsOk,      setGpsOk]      = useState(false);
   const [toast,      setToast]      = useState({ show:false, msg:"" });
   const [todayStatus, setTodayStatus] = useState(null);  // 從 getTodayStatus 來
-  const [gasSched,    setGasSched]    = useState([]);    // 本月排班（給「我的班表」用）
+  const [gasSched,    setGasSched]    = useState([]);    // 指定月份排班（給「我的班表」行事曆用）
   const [loading,     setLoading]     = useState(false);
+  const todayObj = useMemo(() => new Date(), []);
+  const [viewMonth,    setViewMonth]    = useState(() => {
+    const t = new Date();
+    return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0');
+  }); // YYYY-MM
+  const [selectedDate, setSelectedDate] = useState(null); // YYYY-MM-DD，點開行事曆某天時設
 
   const me = staffData.find(s => s.id === account.staffId);
 
-  // 載入 GAS 真實資料：今日狀態 + 本月排班
+  // 載入 GAS 真實資料：今日狀態 + viewMonth 月份排班
   const reloadGAS = useCallback(async () => {
     if (!liveMode || !account.staffId) return;
     setLoading(true);
     try {
-      const today = new Date();
-      const monthStart = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-01';
-      const monthEnd   = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-31';
+      const [y, m] = viewMonth.split('-').map(Number);
+      const lastDay = new Date(y, m, 0).getDate();
+      const monthStart = `${viewMonth}-01`;
+      const monthEnd   = `${viewMonth}-${String(lastDay).padStart(2,'0')}`;
       const [status, sData] = await Promise.all([
         callGAS("getTodayStatus", { empId: String(account.staffId) }),
         callGAS("getMySchedule",  { empId: String(account.staffId), from: monthStart, to: monthEnd }),
@@ -455,9 +476,28 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
     } finally {
       setLoading(false);
     }
-  }, [liveMode, account.staffId]);
+  }, [liveMode, account.staffId, viewMonth]);
 
   useEffect(() => { reloadGAS(); }, [reloadGAS]);
+
+  // 把 gasSched 按日期分組（給行事曆用）
+  const shiftsByDate = useMemo(() => {
+    const map = {};
+    gasSched.forEach(s => {
+      const d = String(s['日期'] || '').substring(0,10);
+      if (!d) return;
+      if (!map[d]) map[d] = [];
+      map[d].push({
+        time: String(s['開場時間'] || '').substring(0,5),
+        theme: s['主題'] || '',
+        role: s['角色'] || '',
+      });
+    });
+    Object.keys(map).forEach(d => {
+      map[d].sort((a,b) => a.time.localeCompare(b.time));
+    });
+    return map;
+  }, [gasSched]);
 
   // 每 60 秒自動重抓今日狀態（場次狀態會隨時間變）
   useEffect(() => {
@@ -729,36 +769,101 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
           </div>
         )}
 
-        {tab==="schedule" && (
+        {tab==="schedule" && liveMode && (
           <div style={S.card}>
-            <div style={S.label}>{liveMode ? `本月排班（共 ${myMonthShifts.length} 場）` : "本週我的班次"}</div>
-            {liveMode ? (
-              myMonthShifts.length === 0
-                ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本月無排班</div>
-                : myMonthShifts.map((s,i) => {
-                  const isToday = s.date === todayStr;
-                  const isPast = s.date < todayStr;
-                  return (
-                    <div key={i} style={S.row(i===myMonthShifts.length-1)}>
-                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                        <div style={{ width:50, fontSize:12, color:C.muted, textAlign:"left" }}>
-                          {s.date.substring(5)}
+            {/* 月份切換 */}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12 }}>
+              <button onClick={() => {
+                const [y, m] = viewMonth.split('-').map(Number);
+                const prev = new Date(y, m-2, 1);
+                setViewMonth(prev.getFullYear() + '-' + String(prev.getMonth()+1).padStart(2,'0'));
+              }} style={{ border:`1px solid ${C.border}`, background:'transparent', borderRadius:8, padding:'4px 10px', cursor:'pointer', fontSize:13, color:C.text, fontFamily:"'Noto Sans TC', sans-serif" }}>◀</button>
+              <div style={{ fontSize:15, fontWeight:600 }}>{viewMonth.substring(0,4)} 年 {parseInt(viewMonth.substring(5,7))} 月</div>
+              <button onClick={() => {
+                const [y, m] = viewMonth.split('-').map(Number);
+                const next = new Date(y, m, 1);
+                setViewMonth(next.getFullYear() + '-' + String(next.getMonth()+1).padStart(2,'0'));
+              }} style={{ border:`1px solid ${C.border}`, background:'transparent', borderRadius:8, padding:'4px 10px', cursor:'pointer', fontSize:13, color:C.text, fontFamily:"'Noto Sans TC', sans-serif" }}>▶</button>
+            </div>
+
+            {/* 統計 + 圖例 */}
+            <div style={{ fontSize:11, color:C.muted, marginBottom:10, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span>共 {myMonthShifts.length} 場</span>
+              <span style={{ display:'flex', alignItems:'center', gap:6 }}>
+                <span style={{ display:'inline-block', width:8, height:8, borderRadius:'50%', background:'#5b8a3a' }}/>有班
+              </span>
+            </div>
+
+            {/* 行事曆 grid */}
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(7, 1fr)', gap:3 }}>
+              {['日','一','二','三','四','五','六'].map((w,i) => (
+                <div key={w} style={{ fontSize:11, textAlign:'center', color: i===0||i===6 ? '#b06a6a' : C.muted, padding:'4px 0', fontWeight:500 }}>{w}</div>
+              ))}
+              {(() => {
+                const [yr, mo] = viewMonth.split('-').map(Number);
+                const firstDay = new Date(yr, mo-1, 1).getDay(); // 0=Sun
+                const lastDate = new Date(yr, mo, 0).getDate();
+                const cells = [];
+                // 空白前墊
+                for (let i = 0; i < firstDay; i++) cells.push(<div key={'pad'+i} />);
+                for (let d = 1; d <= lastDate; d++) {
+                  const dateStr = `${viewMonth}-${String(d).padStart(2,'0')}`;
+                  const dayShifts = shiftsByDate[dateStr] || [];
+                  const dt = new Date(yr, mo-1, d);
+                  const isToday = dateStr === todayStr;
+                  const isPast = dateStr < todayStr;
+                  const isWeekend = dt.getDay() === 0 || dt.getDay() === 6;
+                  cells.push(
+                    <button
+                      key={dateStr}
+                      onClick={() => dayShifts.length > 0 && setSelectedDate(dateStr)}
+                      disabled={dayShifts.length === 0}
+                      style={{
+                        aspectRatio: '1 / 1',
+                        minHeight: 50,
+                        background: isToday ? '#FEF8E7' : C.surface,
+                        border: isToday ? `2px solid #C07000` : `1px solid ${C.border}`,
+                        borderRadius: 8,
+                        padding: 4,
+                        cursor: dayShifts.length > 0 ? 'pointer' : 'default',
+                        opacity: isPast && !isToday ? 0.55 : 1,
+                        display:'flex', flexDirection:'column', alignItems:'center', gap:2,
+                        fontFamily:"'Noto Sans TC', sans-serif",
+                      }}>
+                      <div style={{ fontSize:13, fontWeight: isToday ? 700 : 500,
+                        color: isWeekend ? '#b06a6a' : C.text }}>{d}</div>
+                      {dayShifts.length > 0 && (
+                        <div style={{ display:'flex', gap:2, flexWrap:'wrap', justifyContent:'center' }}>
+                          {dayShifts.slice(0, 4).map((s, idx) => (
+                            <span key={idx} style={{
+                              width:6, height:6, borderRadius:'50%',
+                              background: themeColor(s.theme)
+                            }}/>
+                          ))}
+                          {dayShifts.length > 4 && (
+                            <span style={{ fontSize:9, color:C.muted, lineHeight:1 }}>+{dayShifts.length-4}</span>
+                          )}
                         </div>
-                        <div>
-                          <div style={{ fontSize:13, fontWeight:500 }}>{s.theme}</div>
-                          <div style={{ fontSize:11, color:C.muted }}>{s.time} · {s.role}</div>
-                        </div>
-                      </div>
-                      <span style={S.badge(isToday ? "blue" : isPast ? "gray" : "green")}>
-                        {isToday ? "今日" : isPast ? "已過" : "未來"}
-                      </span>
-                    </div>
+                      )}
+                    </button>
                   );
-                })
-            ) : (
-              myShifts.length === 0
-                ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本週暫無班次</div>
-                : myShifts.map((s,i) => (
+                }
+                return cells;
+              })()}
+            </div>
+
+            <div style={{ fontSize:11, color:C.hint, marginTop:10, textAlign:'center' }}>
+              點任意日期看當天場次詳情
+            </div>
+          </div>
+        )}
+
+        {tab==="schedule" && !liveMode && (
+          <div style={S.card}>
+            <div style={S.label}>本週我的班次</div>
+            {myShifts.length === 0
+              ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本週暫無班次</div>
+              : myShifts.map((s,i) => (
                   <div key={i} style={S.row(i===myShifts.length-1)}>
                     <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                       <div style={{ width:8, height:8, borderRadius:"50%", background:s.room.color, flexShrink:0 }}/>
@@ -770,7 +875,47 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
                     <span style={S.badge("green")}>已排班</span>
                   </div>
                 ))
-            )}
+            }
+          </div>
+        )}
+
+        {/* 行事曆點某天的彈窗 — 顯示該日完整場次 */}
+        {selectedDate && shiftsByDate[selectedDate] && (
+          <div style={{ ...S.modalOverlay, alignItems:"center", padding:"0 1.25rem" }} onClick={() => setSelectedDate(null)}>
+            <div style={{ background:C.surface, borderRadius:16, padding:"1.25rem", width:"100%",
+              maxWidth:380, boxShadow:"0 4px 24px rgba(0,0,0,0.15)" }}
+              onClick={e=>e.stopPropagation()}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                <div>
+                  <div style={{ fontSize:16, fontWeight:600 }}>
+                    {selectedDate.substring(5,7)} 月 {parseInt(selectedDate.substring(8,10))} 日
+                    <span style={{ fontSize:12, color:C.muted, marginLeft:6 }}>
+                      (週{['日','一','二','三','四','五','六'][new Date(selectedDate).getDay()]})
+                    </span>
+                  </div>
+                  <div style={{ fontSize:11, color:C.muted, marginTop:2 }}>
+                    共 {shiftsByDate[selectedDate].length} 場
+                    {selectedDate === todayStr && <span style={{ marginLeft:6, color:'#C07000', fontWeight:500 }}>今日</span>}
+                  </div>
+                </div>
+                <button onClick={() => setSelectedDate(null)} style={{
+                  border:'none', background:'transparent', fontSize:22, color:C.muted,
+                  cursor:'pointer', padding:'0 4px', lineHeight:1 }}>×</button>
+              </div>
+              {shiftsByDate[selectedDate].map((s, i, arr) => (
+                <div key={i} style={{
+                  display:'flex', alignItems:'center', gap:10,
+                  padding:'10px 0',
+                  borderBottom: i === arr.length - 1 ? 'none' : `1px solid ${C.border}`
+                }}>
+                  <div style={{ width:10, height:10, borderRadius:'50%', background:themeColor(s.theme), flexShrink:0 }}/>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:14, fontWeight:500 }}>{s.theme} <span style={{ color:C.muted, fontSize:12 }}>{s.role}</span></div>
+                    <div style={{ fontSize:12, color:C.muted }}>{s.time} 開場</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
