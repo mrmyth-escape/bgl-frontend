@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 
 // ── SimplyBook 串接設定 ──────────────────────────────────
 const SB_CONFIG = {
@@ -997,6 +997,54 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   );
 }
 
+// ── GAS 排班後台嵌入元件（全螢幕 iframe + SSO 自動登入）────
+function GasAdminEmbed({ onClose }) {
+  const iframeRef = useRef(null);
+  const ADMIN_PASS = "admin1234";
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.data && e.data.type === "bgl_adminReady" && iframeRef.current?.contentWindow) {
+        try {
+          iframeRef.current.contentWindow.postMessage({ type: "bgl_autoAdminLogin", pwd: ADMIN_PASS }, "*");
+        } catch (err) {}
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:100, background:"#fff", display:"flex", flexDirection:"column" }}>
+      <div style={{ padding:"8px 14px", borderBottom:`1px solid ${C.border}`,
+        display:"flex", justifyContent:"space-between", alignItems:"center",
+        background:"#f7f3ec", flexShrink:0 }}>
+        <span style={{ fontSize:13, fontWeight:500, color:C.text }}>📅 GAS 排班後台</span>
+        <button onClick={onClose} style={{ background:"transparent", border:`1px solid ${C.border}`,
+          borderRadius:6, padding:"4px 10px", fontSize:12, cursor:"pointer",
+          fontFamily:"'Noto Sans TC', sans-serif", color:C.text }}>
+          ← 返回
+        </button>
+      </div>
+      <iframe
+        ref={iframeRef}
+        src={`${GAS_URL}?page=admin`}
+        style={{ flex:1, border:"none", width:"100%" }}
+        title="GAS 排班後台"
+        onLoad={() => {
+          [100, 500, 1500, 3000].forEach(delay => {
+            setTimeout(() => {
+              try {
+                iframeRef.current?.contentWindow?.postMessage({ type:"bgl_autoAdminLogin", pwd:ADMIN_PASS }, "*");
+              } catch (err) {}
+            }, delay);
+          });
+        }}
+      />
+    </div>
+  );
+}
+
 // ── 管理者版 ──────────────────────────────────────────────
 function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout }) {
   const [tab,            setTab]           = useState("overview");
@@ -1263,163 +1311,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
 
         {/* ── 排班 ── */}
         {tab==="schedule" && (
-          <div>
-            <div style={{ display:"flex", gap:6, marginBottom:"0.75rem" }}>
-              {BRANCHES.map(b => (
-                <button key={b} onClick={()=>{ setSelectedBranch(b); setSelectedRoom(ROOMS.find(r=>r.branch===b)?.id||"A"); }} style={{
-                  flex:1, padding:"8px 0", border:"1px solid",
-                  borderRadius:10, fontSize:13, fontWeight:500, cursor:"pointer",
-                  fontFamily:"'Noto Sans TC', sans-serif",
-                  borderColor: selectedBranch===b ? "#2A5CC0" : C.border,
-                  background:  selectedBranch===b ? "#EEF4FF" : C.surface,
-                  color:       selectedBranch===b ? "#2A5CC0" : C.muted,
-                }}>{b}</button>
-              ))}
-            </div>
-
-            <div style={{ display:"flex", gap:4, overflowX:"auto", marginBottom:"0.75rem", paddingBottom:4 }}>
-              {weekDates.map((d,i) => {
-                const sel = d.toDateString()===selectedDate.toDateString();
-                const isToday = d.toDateString()===new Date().toDateString();
-                return (
-                  <button key={i} onClick={()=>setSelectedDate(d)} style={{
-                    flexShrink:0, padding:"6px 10px", border:"1px solid",
-                    borderRadius:10, minWidth:44, textAlign:"center",
-                    borderColor: sel ? "#2A5CC0" : C.border,
-                    background:  sel ? "#EEF4FF" : C.surface,
-                    color:       sel ? "#2A5CC0" : isToday ? C.text : C.muted,
-                    fontSize:12, cursor:"pointer",
-                    fontFamily:"'Noto Sans TC', sans-serif", fontWeight: sel ? 500 : 400,
-                  }}>
-                    <div>{WEEK_DAYS[i]}</div>
-                    <div style={{ fontWeight:600 }}>{d.getDate()}</div>
-                    {isToday && <div style={{ width:4, height:4, borderRadius:"50%", background:"#2A5CC0", margin:"2px auto 0" }}/>}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div style={{ display:"flex", gap:4, marginBottom:"0.75rem" }}>
-              {[["timeline","時間軸"],["heatmap","熱圖"],["single","單場"]].map(([v,l]) => (
-                <button key={v} style={{ ...S.tab(viewMode===v), flex:"none", padding:"6px 14px", fontSize:12 }}
-                  onClick={()=>setViewMode(v)}>{l}</button>
-              ))}
-            </div>
-
-            {viewMode==="timeline" && (
-              <div style={S.card}>
-                {Object.keys(bookedSlots).length === 0
-                  ? <div style={{ fontSize:13, color:C.hint, textAlign:"center", padding:"2rem 0" }}>今日無預約</div>
-                  : Object.entries(bookedSlots).map(([time,rooms]) => (
-                    <div key={time} style={{ marginBottom:14 }}>
-                      <div style={{ fontSize:11, color:C.muted, marginBottom:6, fontWeight:600 }}>{time}</div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                        {rooms.map(r => {
-                          const cell = schedule[r.id][time];
-                          const sf   = staffById(cell.staffId, staffData);
-                          return (
-                            <button key={r.id} onClick={()=>setModal({roomId:r.id,time})} style={{
-                              padding:"6px 10px", borderRadius:10, border:`1px solid ${r.color}30`,
-                              background:r.bg, cursor:"pointer", textAlign:"left",
-                              fontFamily:"'Noto Sans TC', sans-serif",
-                            }}>
-                              <div style={{ fontSize:12, color:r.color, fontWeight:500 }}>{r.name}</div>
-                              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-                                {cell.clientName || "—"}
-                                {cell.source==="simplybook" && <span style={{ color:"#2A5CC0", marginLeft:4 }}>SB</span>}
-                                {sf && <span style={{ marginLeft:4 }}>
-                                  <span style={{ display:"inline-block", width:5, height:5, borderRadius:"50%",
-                                    background:sf.color, marginRight:2, verticalAlign:"middle" }}/>
-                                  {sf.name}
-                                </span>}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))
-                }
-                <button onClick={()=>setModal({roomId:"A",time:"10:00"})}
-                  style={{ ...S.ghostBtn, width:"100%", padding:"8px 0", marginTop:4, textAlign:"center", color:C.muted }}>
-                  + 新增排班
-                </button>
-              </div>
-            )}
-
-            {viewMode==="heatmap" && (
-              <div style={{ ...S.card, overflowX:"auto" }}>
-                <div style={{
-                  display:"grid",
-                  gridTemplateColumns:`50px repeat(${branchRooms.length},1fr)`,
-                  gap:2, minWidth:280,
-                }}>
-                  <div/>
-                  {branchRooms.map(r => (
-                    <div key={r.id} style={{ fontSize:10, color:r.color, textAlign:"center", fontWeight:600, paddingBottom:6 }}>
-                      {r.name.slice(0,2)}
-                    </div>
-                  ))}
-                  {SLOTS.map(t => (
-                    <Fragment key={t}>
-                      <div style={{ fontSize:10, color:C.muted, display:"flex", alignItems:"center", paddingRight:4 }}>{t}</div>
-                      {branchRooms.map(r => {
-                        const cell = schedule[r.id]?.[t];
-                        return (
-                          <button key={r.id} onClick={()=>setModal({roomId:r.id,time:t})} style={{
-                            height:16, border:"none", borderRadius:3, cursor:"pointer",
-                            background: cell?.booked ? r.color+"CC" : C.tabBg,
-                            transition:"opacity .1s",
-                          }}/>
-                        );
-                      })}
-                    </Fragment>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {viewMode==="single" && (
-              <div>
-                <div style={{ display:"flex", gap:4, flexWrap:"wrap", marginBottom:"0.75rem" }}>
-                  {branchRooms.map(r => (
-                    <button key={r.id} onClick={()=>setSelectedRoom(r.id)} style={{
-                      padding:"5px 10px", borderRadius:8, border:"1px solid",
-                      borderColor: selectedRoom===r.id ? r.color : C.border,
-                      background:  selectedRoom===r.id ? r.bg : C.surface,
-                      color:       selectedRoom===r.id ? r.color : C.muted,
-                      fontSize:12, cursor:"pointer",
-                      fontFamily:"'Noto Sans TC', sans-serif",
-                    }}>{r.name}</button>
-                  ))}
-                </div>
-                <div style={S.card}>
-                  {SLOTS.map((t,i) => {
-                    const cell = schedule[selectedRoom]?.[t];
-                    const room = ROOMS.find(r=>r.id===selectedRoom);
-                    const sf   = staffById(cell?.staffId, staffData);
-                    return (
-                      <div key={t} onClick={()=>setModal({roomId:selectedRoom,time:t})}
-                        style={{ ...S.row(i===SLOTS.length-1), cursor:"pointer" }}>
-                        <span style={{ fontSize:12, color: cell?.booked ? C.text : C.hint }}>{t}</span>
-                        {cell?.booked
-                          ? <div style={{ textAlign:"right" }}>
-                              <div style={{ fontSize:12, color:room.color, fontWeight:500 }}>{cell.clientName||"已預約"}</div>
-                              <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>
-                                {sf && <><span style={{ display:"inline-block", width:5, height:5, borderRadius:"50%",
-                                  background:sf.color, marginRight:3, verticalAlign:"middle" }}/>{sf.name}</>}
-                                {cell.source==="simplybook" && <span style={{ color:"#2A5CC0", marginLeft:4 }}>SB</span>}
-                              </div>
-                            </div>
-                          : <span style={{ fontSize:10, color:C.hint }}>空閒</span>
-                        }
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+          <GasAdminEmbed onClose={() => setTab("overview")} />
         )}
 
         {/* ── 打卡管理 ── */}
