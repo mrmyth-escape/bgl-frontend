@@ -1078,12 +1078,26 @@ function GasAdminEmbed({ onClose }) {
 }
 
 // ── 管理者版 ──────────────────────────────────────────────
-function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout, liveMode }) {
+function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout, liveMode, staffData, setStaffData, reloadStaff }) {
   const [tab,            setTab]           = useState("overview");
   const [viewMode,       setViewMode]      = useState("timeline");
   const [adminOverview,  setAdminOverview] = useState(null);
   const [monthSalary,    setMonthSalary]   = useState(null);
   const [salaryLoading,  setSalaryLoading] = useState(false);
+  const [systemStatus,   setSystemStatus]  = useState(null);
+
+  // 系統狀態：切到設定 tab 時抓
+  const reloadSystemStatus = useCallback(async () => {
+    if (!liveMode) return;
+    try {
+      const data = await callGAS('getSystemStatus');
+      setSystemStatus(data);
+    } catch (e) { console.warn('getSystemStatus 失敗:', e.message); }
+  }, [liveMode]);
+
+  useEffect(() => {
+    if (liveMode && tab === 'settings') reloadSystemStatus();
+  }, [liveMode, tab, reloadSystemStatus]);
 
   // 從 GAS 抓真實 admin overview，每分鐘 reload
   useEffect(() => {
@@ -1123,7 +1137,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [selectedRoom,   setSelectedRoom]  = useState("A");
   const [selectedBranch, setSelectedBranch]= useState("大忠店");
   const [modal,          setModal]         = useState(null);
-  const [staffData,      setStaffData]     = useState(INIT_STAFF.map(s=>({...s})));
+  // staffData/setStaffData 改從 props 來（main App 統一管理 + liveMode 接 GAS）
   const [toast,          setToast]         = useState({ show:false, msg:"" });
   const [sbLogin,        setSbLogin]       = useState(SB_CONFIG.companyLogin);
   const [sbKey,          setSbKey]         = useState("");
@@ -1196,44 +1210,79 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   }
 
   // 儲存員工編輯
-  function handleSaveStaff({ name, rate, shift, color, password }) {
-    if (editStaff.isNew) {
-      const newId = nextStaffId();
-      setStaffData(prev => [...prev, { id:newId, name, rate, color, shift, bonus:0, deduct:0 }]);
-      setAccounts(prev => ({ ...prev, [name]: { pass:password, role:"staff", staffId:newId } }));
-      showToast(`已建立員工帳號：${name}`);
-    } else {
-      const s = editStaff.staff;
-      setStaffData(prev => prev.map(x => x.id===s.id ? { ...x, rate, shift, color } : x));
-      if (password) {
-        // 找到此員工對應的帳號並更新密碼
-        setAccounts(prev => {
-          const next = { ...prev };
-          Object.keys(next).forEach(k => {
-            if (next[k].staffId === s.id) next[k] = { ...next[k], pass:password };
+  async function handleSaveStaff({ name, rate, shift, color, password, role, branch, themes, lineUserId }) {
+    if (liveMode) {
+      try {
+        if (editStaff.isNew) {
+          const res = await callGAS('addStaff', {
+            name, rate, password,
+            role: role || '兼職NPC',
+            branch: branch || '兩店通用',
+            themes: themes || '',
+            lineUserId: lineUserId || ''
           });
-          return next;
-        });
-        showToast(`已更新 ${s.name} 的資料和密碼`);
+          showToast(`已新增員工 ${name}（${res.empId}）寫入 Sheets`);
+        } else {
+          const updates = { rate };
+          if (password) updates.password = password;
+          if (role) updates.role = role;
+          if (branch) updates.branch = branch;
+          if (themes !== undefined) updates.themes = themes;
+          if (lineUserId !== undefined) updates.lineUserId = lineUserId;
+          await callGAS('updateStaff', { empId: editStaff.staff.id, updates });
+          showToast(`已更新 ${editStaff.staff.name}`);
+        }
+        await reloadStaff();   // 抓最新資料
+      } catch (e) {
+        showToast(`儲存失敗：${e.message}`);
+      }
+    } else {
+      // demo 模式：原本邏輯
+      if (editStaff.isNew) {
+        const newId = nextStaffId();
+        setStaffData(prev => [...prev, { id:newId, name, rate, color, shift, bonus:0, deduct:0 }]);
+        setAccounts(prev => ({ ...prev, [name]: { pass:password, role:"staff", staffId:newId } }));
+        showToast(`已建立員工帳號：${name}`);
       } else {
-        showToast(`已更新 ${s.name} 的資料`);
+        const s = editStaff.staff;
+        setStaffData(prev => prev.map(x => x.id===s.id ? { ...x, rate, shift, color } : x));
+        if (password) {
+          setAccounts(prev => {
+            const next = { ...prev };
+            Object.keys(next).forEach(k => {
+              if (next[k].staffId === s.id) next[k] = { ...next[k], pass:password };
+            });
+            return next;
+          });
+        }
+        showToast(`已更新 ${s.name}`);
       }
     }
     setEditStaff(null);
   }
 
   // 刪除員工
-  function handleDeleteStaff() {
+  async function handleDeleteStaff() {
     const id = deleteStaffId;
     const s = staffData.find(x => x.id === id);
-    setStaffData(prev => prev.filter(x => x.id !== id));
-    setAccounts(prev => {
-      const next = { ...prev };
-      Object.keys(next).forEach(k => { if (next[k].staffId === id) delete next[k]; });
-      return next;
-    });
+    if (liveMode) {
+      try {
+        await callGAS('deleteStaff', { empId: id });
+        showToast(`${s?.name} 已標記為「離職」（Sheets 保留歷史資料）`);
+        await reloadStaff();
+      } catch (e) {
+        showToast(`刪除失敗：${e.message}`);
+      }
+    } else {
+      setStaffData(prev => prev.filter(x => x.id !== id));
+      setAccounts(prev => {
+        const next = { ...prev };
+        Object.keys(next).forEach(k => { if (next[k].staffId === id) delete next[k]; });
+        return next;
+      });
+      showToast(`已刪除員工：${s?.name}`);
+    }
     setDeleteStaffId(null);
-    showToast(`已刪除員工：${s?.name}`);
   }
 
   // 確認異常打卡
@@ -1701,64 +1750,103 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
         {/* ── 設定 ── */}
         {tab==="settings" && (
           <div>
-            {/* SimplyBook 串接 */}
+            {/* 系統狀態 */}
+            {liveMode && (
+              <div style={S.card}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                  <div style={S.label}>系統狀態</div>
+                  <button onClick={reloadSystemStatus} style={{ fontSize:11, padding:"3px 8px",
+                    border:`1px solid ${C.border}`, borderRadius:6, background:"transparent",
+                    color:C.muted, cursor:"pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>↻</button>
+                </div>
+                {!systemStatus
+                  ? <div style={{ fontSize:12, color:C.hint, padding:"0.5rem 0" }}>載入中...</div>
+                  : (
+                    <div style={{ fontSize:12 }}>
+                      {/* SimplyBook */}
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>SimplyBook 同步</span>
+                        <span style={{ color: systemStatus.simplybook.autoSyncTrigger ? C.success.text : C.danger.text, fontWeight:500 }}>
+                          {systemStatus.simplybook.autoSyncTrigger ? "✓ 每 15 分鐘自動跑" : "✗ trigger 沒在跑"}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>　最新預約寫入</span>
+                        <span style={{ color:C.text, fontFamily:"monospace", fontSize:11 }}>{systemStatus.simplybook.latestBookingTime || "—"}</span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>　預約總筆數</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.sheets.bookingsCount} 筆</span>
+                      </div>
+
+                      {/* Calendar */}
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>行事曆可班同步</span>
+                        <span style={{ color: systemStatus.calendar.syncTrigger ? C.success.text : C.danger.text, fontWeight:500 }}>
+                          {systemStatus.calendar.syncTrigger ? "✓ 每日 06:00 跑" : "✗"}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>　可班時段筆數</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.sheets.availCount} 列</span>
+                      </div>
+
+                      {/* LINE */}
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>LINE Channel Token</span>
+                        <span style={{ color: systemStatus.line.tokenConfigured ? C.success.text : C.warning.text, fontWeight:500 }}>
+                          {systemStatus.line.tokenConfigured ? "✓ 已填" : "⏳ 待設定"}
+                        </span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>　Owner LINE ID</span>
+                        <span style={{ color: systemStatus.line.ownerConfigured ? C.success.text : C.warning.text, fontWeight:500 }}>
+                          {systemStatus.line.ownerConfigured ? "✓" : "⏳"}
+                        </span>
+                      </div>
+
+                      {/* Sheets 概況 */}
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>排班筆數</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.sheets.scheduleCount} 筆</span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>打卡記錄筆數</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.sheets.punchRecordsCount} 筆</span>
+                      </div>
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0", borderBottom:`1px solid ${C.border}` }}>
+                        <span style={{ color:C.muted }}>在職 / 總員工</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.sheets.employeesActive} / {systemStatus.sheets.employeesTotal}</span>
+                      </div>
+
+                      <div style={{ display:"flex", justifyContent:"space-between", padding:"7px 0" }}>
+                        <span style={{ color:C.muted }}>觸發器</span>
+                        <span style={{ color:C.text, fontWeight:500 }}>{systemStatus.triggerCount} 個</span>
+                      </div>
+                      <div style={{ fontSize:10, color:C.hint, paddingLeft:8, lineHeight:1.6 }}>
+                        {systemStatus.triggers.map(t => t.fn).join('、')}
+                      </div>
+                    </div>
+                  )
+                }
+              </div>
+            )}
+
+            {/* 員工帳號管理 — 真正接 GAS */}
             <div style={S.card}>
-              <div style={S.label}>SimplyBook 串接</div>
-              <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>Company Login（網址前綴）</div>
-              <input style={S.inp} value={sbLogin} onChange={e=>setSbLogin(e.target.value)} placeholder="bglescape"/>
-              <div style={{ fontSize:11, color:C.muted, marginBottom:6 }}>API Key</div>
-              <input style={S.inp} type="password" value={sbKey} onChange={e=>setSbKey(e.target.value)} placeholder="貼上 API Key"/>
-
-              {/* 連線狀態 */}
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"9px 12px",
-                background: sbStatus==="ok" ? C.success.bg : sbStatus==="error" ? C.danger.bg : "#FEF8E7",
-                borderRadius:8, marginBottom:12, fontSize:12,
-                color: sbStatus==="ok" ? C.success.text : sbStatus==="error" ? C.danger.text : C.warning.text }}>
-                <div style={{ width:7,height:7,borderRadius:"50%", flexShrink:0,
-                  background: sbStatus==="ok" ? "#0F9B6A" : sbStatus==="error" ? C.danger.text : "#C07000" }}/>
-                {sbStatus==="ok"      ? "後端連線正常 ✓" :
-                 sbStatus==="error"   ? "連線失敗，請確認後端服務" :
-                 sbStatus==="loading" ? "測試中..." :
-                 sbLogin&&sbKey       ? "設定完成，點下方按鈕測試連線" : "尚未填入 SimplyBook 資訊"}
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <div style={S.label}>員工帳號管理（{staffData.length}）</div>
+                {liveMode && <span style={{ fontSize:10, color:C.success.text, padding:"2px 6px", background:C.success.bg, borderRadius:4 }}>同步 Sheets</span>}
               </div>
-
-              <div style={{ display:"flex", gap:8, marginBottom:12 }}>
-                <button
-                  onClick={testSimplyBookConn}
-                  disabled={sbStatus==="loading"}
-                  style={{ flex:1, ...S.ghostBtn, padding:10, textAlign:"center",
-                    opacity: sbStatus==="loading" ? 0.6 : 1 }}>
-                  {sbStatus==="loading" ? "測試中..." : "測試 SimplyBook 連線"}
-                </button>
-                <button
-                  onClick={syncTodayBookings}
-                  disabled={syncStatus==="loading"}
-                  style={{ flex:1, ...S.ghostBtn, padding:10, textAlign:"center",
-                    color:C.info.text, borderColor:C.info.text+"44", background:C.info.bg,
-                    opacity: syncStatus==="loading" ? 0.6 : 1 }}>
-                  {syncStatus==="loading" ? "同步中..." : "立即同步今日預約"}
-                </button>
-              </div>
-
-              <div style={{ fontSize:11, color:C.muted, marginBottom:8 }}>Webhook URL（填入 SimplyBook 後台）</div>
-              <div style={{ background:C.tabBg, borderRadius:8, padding:"9px 12px", fontSize:11,
-                color:C.text, fontFamily:"monospace", marginBottom:12, wordBreak:"break-all" }}>
-                {SB_CONFIG.backendUrl}/api/webhook
-              </div>
-              <button style={{ ...S.ghostBtn, width:"100%", padding:10, textAlign:"center" }}
-                onClick={()=>showToast("設定已儲存")}>儲存設定</button>
-            </div>
-
-            {/* 員工帳號管理 */}
-            <div style={S.card}>
-              <div style={S.label}>員工帳號管理</div>
               {staffData.map((s,i) => (
                 <div key={s.id} style={S.row(i===staffData.length-1)}>
                   <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                     <Avatar name={s.name} color={s.color} size={28}/>
                     <div>
-                      <div style={{ fontSize:13 }}>{s.name}</div>
-                      <div style={{ fontSize:10, color:C.hint }}>${s.rate}/h · {s.shift} 起班</div>
+                      <div style={{ fontSize:13, fontWeight:500 }}>{s.name} <span style={{ fontSize:10, color:C.muted, marginLeft:4 }}>{s.id}</span></div>
+                      <div style={{ fontSize:10, color:C.hint }}>
+                        {s.role || ''} {s.branch ? '· '+s.branch : ''} · ＄{s.rate}/h
+                      </div>
                     </div>
                   </div>
                   <div style={{ display:"flex", gap:6 }}>
@@ -1770,7 +1858,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
                     <button
                       style={{ ...S.ghostBtn, padding:"5px 10px", color:C.danger.text, borderColor:C.danger.text+"44", background:C.danger.bg }}
                       onClick={()=>setDeleteStaffId(s.id)}>
-                      刪除
+                      {liveMode ? '離職' : '刪除'}
                     </button>
                   </div>
                 </div>
@@ -1778,8 +1866,26 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
               <button
                 style={{ ...S.ghostBtn, width:"100%", padding:10, marginTop:10, textAlign:"center" }}
                 onClick={()=>setEditStaff({ staff:null, isNew:true })}>
-                + 新增員工帳號
+                + 新增員工{liveMode ? '（寫入 Sheets）' : ''}
               </button>
+              {liveMode && (
+                <div style={{ fontSize:10, color:C.hint, textAlign:"center", marginTop:8, lineHeight:1.5 }}>
+                  改動會即時寫入 Sheets「員工主檔」<br/>
+                  「離職」員工資料保留（薪資/排班歷史用）
+                </div>
+              )}
+            </div>
+
+            {/* 進階：直連 Sheets */}
+            <div style={S.card}>
+              <div style={S.label}>進階</div>
+              <a href="https://docs.google.com/spreadsheets/d/1LJqq4oMjuFc3zkXnqk9MALWcc246umBjtGjIBUZE55Y"
+                target="_blank" rel="noreferrer"
+                style={{ display:"block", textAlign:"center", padding:10, borderRadius:8,
+                  border:`1px solid ${C.border}`, color:C.muted, textDecoration:"none", fontSize:12,
+                  fontFamily:"'Noto Sans TC', sans-serif" }}>
+                🔗 開啟 Sheets 資料庫
+              </a>
             </div>
           </div>
         )}
@@ -1868,34 +1974,35 @@ export default function App() {
   const [liveMode,  setLiveMode]  = useState(false); // true = GAS Sheets 連線中
   const [gasError,  setGasError]  = useState(null);
 
-  // 啟動時從 GAS 載入真實員工 + 帳號（預設密碼＝員工ID）
-  useEffect(() => {
-    let cancel = false;
-    (async () => {
-      try {
-        const data = await callGAS("getStaffPublic");
-        if (cancel) return;
-        const list = (data?.staff || []).filter(s => s.id);
-        if (list.length === 0) throw new Error("GAS 沒回員工");
-        const realStaff = list.map(gasStaffToLocal);
-        const realAccounts = {
-          admin: { pass: "admin999", role: "admin" }, // admin 帳號仍走本地
-        };
-        list.forEach(s => {
-          realAccounts[s.id]   = { pass: s.id, role: "staff", staffId: s.id }; // 預設密碼 = ID
-          realAccounts[s.name] = { pass: s.id, role: "staff", staffId: s.id }; // 也可用姓名登入
-        });
-        setStaffData(realStaff);
-        setAccounts(realAccounts);
-        setLiveMode(true);
-        setGasError(null);
-      } catch (e) {
-        setGasError(e.message);
-        // 留在 demo 模式
-      }
-    })();
-    return () => { cancel = true; };
+  // 從 GAS 載入真實員工 + 帳號（可被呼叫 reload）
+  const reloadStaffFromGAS = useCallback(async () => {
+    try {
+      const data = await callGAS("getStaffPublic");
+      const list = (data?.staff || []).filter(s => s.id);
+      if (list.length === 0) throw new Error("GAS 沒回員工");
+      const realStaff = list.map(gasStaffToLocal);
+      const realAccounts = {
+        admin: { pass: "admin999", role: "admin" }, // admin 仍走 GAS verifyAdmin（這裡的 pass 只是 demo fallback）
+      };
+      list.forEach(s => {
+        realAccounts[s.id]   = { pass: s.id, role: "staff", staffId: s.id }; // 預設密碼 = ID
+        realAccounts[s.name] = { pass: s.id, role: "staff", staffId: s.id };
+      });
+      setStaffData(realStaff);
+      setAccounts(realAccounts);
+      setLiveMode(true);
+      setGasError(null);
+      return realStaff;
+    } catch (e) {
+      setGasError(e.message);
+      throw e;
+    }
   }, []);
+
+  // 啟動時跑一次
+  useEffect(() => {
+    reloadStaffFromGAS().catch(() => {});
+  }, [reloadStaffFromGAS]);
 
   const handleLogin  = useCallback((acc, username) => setUser({ ...acc, username }), []);
   const handleLogout = useCallback(() => setUser(null), []);
@@ -1942,6 +2049,9 @@ export default function App() {
       setAccounts={setAccounts}
       onLogout={handleLogout}
       liveMode={liveMode}
+      staffData={staffData}
+      setStaffData={setStaffData}
+      reloadStaff={reloadStaffFromGAS}
     />
   );
 }
