@@ -1174,6 +1174,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [adminOverview,  setAdminOverview] = useState(null);
   const [monthSalary,    setMonthSalary]   = useState(null);
   const [salaryLoading,  setSalaryLoading] = useState(false);
+  const [bizReport,      setBizReport]     = useState(null);
   const [systemStatus,   setSystemStatus]  = useState(null);
 
   // 系統狀態：切到設定 tab 時抓
@@ -1204,17 +1205,21 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     return () => { cancel = true; clearInterval(id); };
   }, [liveMode]);
 
-  // 載入本月薪資（lazy：第一次切到薪資 tab 時抓）
+  // 載入本月薪資 + 商業報表（lazy：第一次切到薪資 tab 時抓）
   const reloadMonthSalary = useCallback(async () => {
     if (!liveMode) return;
     setSalaryLoading(true);
     try {
       const now = new Date();
       const month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
-      const data = await callGAS('calculateMonthlySalary', { month });
-      setMonthSalary(data);
+      const [sal, biz] = await Promise.all([
+        callGAS('calculateMonthlySalary', { month }),
+        callGAS('getMonthBusinessReport', { month }).catch(() => null),
+      ]);
+      setMonthSalary(sal);
+      setBizReport(biz);
     } catch (e) {
-      console.warn('calculateMonthlySalary 失敗:', e.message);
+      console.warn('reloadMonthSalary 失敗:', e.message);
     } finally {
       setSalaryLoading(false);
     }
@@ -1774,6 +1779,65 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
 
             {monthSalary && (
               <>
+                {/* 經營概況：月營收 + 人事 + 毛利 (謎先生) */}
+                {bizReport && bizReport.revenueAvailable && (
+                  <div style={{ ...S.card, marginBottom:"0.75rem" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
+                      <span style={{ fontSize:13, fontWeight:500 }}>📈 本月經營概況 (謎先生)</span>
+                      <span style={{ fontSize:10, color:C.hint }}>{bizReport.daysWithRevenue} 天有營收</span>
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}>
+                      <div style={{ textAlign:"center", padding:"10px 4px", background:"#EDFBF4", borderRadius:8 }}>
+                        <div style={{ fontSize:10, color:"#1A7A4A", marginBottom:3 }}>毛收入</div>
+                        <div style={{ fontSize:15, fontWeight:700, color:"#1A7A4A" }}>
+                          ＄{(bizReport.revenue/1000).toFixed(0)}k
+                        </div>
+                      </div>
+                      <div style={{ textAlign:"center", padding:"10px 4px", background:"#FEF0F0", borderRadius:8 }}>
+                        <div style={{ fontSize:10, color:"#C0292A", marginBottom:3 }}>人事</div>
+                        <div style={{ fontSize:15, fontWeight:700, color:"#C0292A" }}>
+                          ＄{(bizReport.labor/1000).toFixed(1)}k
+                        </div>
+                      </div>
+                      <div style={{ textAlign:"center", padding:"10px 4px",
+                        background: bizReport.grossProfit > 0 ? "#EEF4FF" : "#FEF8E7", borderRadius:8 }}>
+                        <div style={{ fontSize:10, color: bizReport.grossProfit > 0 ? "#2A5CC0" : "#C07000", marginBottom:3 }}>毛利</div>
+                        <div style={{ fontSize:15, fontWeight:700, color: bizReport.grossProfit > 0 ? "#2A5CC0" : "#C07000" }}>
+                          ＄{(bizReport.grossProfit/1000).toFixed(0)}k
+                        </div>
+                      </div>
+                    </div>
+                    {bizReport.revenue > 0 && (
+                      <div style={{ fontSize:11, color:C.muted, textAlign:"center", marginBottom:6 }}>
+                        人事佔比 {(bizReport.laborRatio*100).toFixed(1)}%
+                        {bizReport.laborRatio > 0.4 && <span style={{ color:C.danger.text, marginLeft:6 }}>⚠ 偏高</span>}
+                      </div>
+                    )}
+                    {bizReport.revenueByTheme && (
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, justifyContent:"center", marginTop:8 }}>
+                        {Object.entries(bizReport.revenueByTheme)
+                          .filter(([, v]) => v > 0)
+                          .sort(([, a], [, b]) => b - a)
+                          .map(([theme, val]) => (
+                            <span key={theme} style={{ fontSize:10, padding:"3px 8px", borderRadius:6,
+                              background: '#f5f3ee', color: themeColor(theme), fontWeight:500 }}>
+                              {theme} ＄{(val/1000).toFixed(0)}k
+                            </span>
+                          ))
+                        }
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {bizReport && !bizReport.revenueAvailable && (
+                  <div style={{ ...S.card, marginBottom:"0.75rem", background:C.tabBg }}>
+                    <div style={{ fontSize:11, color:C.muted, textAlign:"center" }}>
+                      📊 本月營收資料尚未填寫 ({bizReport.revenueError || '請員工每日記錄'})
+                    </div>
+                  </div>
+                )}
+
                 <div style={{ ...S.card, background:C.info.bg, marginBottom:"0.75rem" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                     <span style={{ color:C.info.text, fontSize:13 }}>本月應付薪資合計</span>
