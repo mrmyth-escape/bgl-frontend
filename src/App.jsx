@@ -303,45 +303,133 @@ function Avatar({ name, color, size=36 }) {
 }
 
 // ── 員工編輯 Modal ────────────────────────────────────────
-function StaffEditModal({ staff, isNew, onSave, onClose }) {
-  const [name,     setName]     = useState(staff?.name     || "");
-  const [rate,     setRate]     = useState(String(staff?.rate  || 180));
-  const [shift,    setShift]    = useState(staff?.shift    || "10:00");
-  const [color,    setColor]    = useState(staff?.color    || "#3B82F6");
-  const [password, setPassword] = useState("");
+const STAFF_ROLES = ['密室正職', '桌遊正職', '兼職NPC', '兼職場控', '兼職美術'];
+const STAFF_BRANCHES = ['兩店通用', '大忠店', '謎先生'];
+const STAFF_THEMES = ['詭店', '詭獄', '詭獄加場', '詭廁', '越獄者', '屎力全開', '孤兒怨', '桌遊'];
 
-  const canSave = isNew ? name.trim() && password.trim() : true;
+function StaffEditModal({ staff, isNew, onSave, onClose, liveMode }) {
+  const [name,       setName]       = useState(staff?.name     || "");
+  const [rate,       setRate]       = useState(String(staff?.rate  || 200));
+  const [password,   setPassword]   = useState("");
+  // demo 用
+  const [shift,      setShift]      = useState(staff?.shift    || "10:00");
+  const [color,      setColor]      = useState(staff?.color    || "#3B82F6");
+  // liveMode 用
+  const [role,       setRole]       = useState(staff?.role   || "兼職NPC");
+  const [branch,     setBranch]     = useState(staff?.branch || "兩店通用");
+  const [lineUserId, setLineUserId] = useState(staff?.lineUserId || "");
+  const initThemes = useMemo(() => {
+    if (!staff?.themes) return [];
+    return STAFF_THEMES.filter(t => staff.themes.indexOf(t) >= 0);
+  }, [staff]);
+  const [themes,     setThemes]     = useState(initThemes);
+
+  const toggleTheme = (t) => {
+    setThemes(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
+  };
+
+  const canSave = isNew ? name.trim() : true;
+
+  const handleSave = () => {
+    if (liveMode) {
+      onSave({
+        name: name.trim(),
+        rate: Number(rate) || 200,
+        password,
+        role,
+        branch,
+        themes: themes.join('、'),
+        lineUserId: lineUserId.trim(),
+      });
+    } else {
+      onSave({ name:name.trim(), rate:Number(rate)||180, shift, color, password });
+    }
+  };
 
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.modalSheet} onClick={e=>e.stopPropagation()}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-          <div style={{ fontSize:15, fontWeight:500 }}>{isNew ? "新增員工" : `編輯員工：${staff.name}`}</div>
+          <div>
+            <div style={{ fontSize:15, fontWeight:500 }}>{isNew ? "新增員工" : `編輯員工：${staff.name}`}</div>
+            {!isNew && staff?.id && <div style={{ fontSize:10, color:C.muted, marginTop:2 }}>{staff.id}</div>}
+          </div>
           <button onClick={onClose} style={{ border:"none", background:C.tabBg, color:C.muted,
             fontSize:16, cursor:"pointer", width:30, height:30, borderRadius:"50%", lineHeight:1 }}>×</button>
         </div>
 
         {isNew && (
           <>
-            <div style={S.label}>姓名（同時作為登入帳號）</div>
+            <div style={S.label}>姓名</div>
             <input style={S.inp} value={name} onChange={e=>setName(e.target.value)} placeholder="輸入姓名"/>
+            {liveMode && <div style={{ fontSize:10, color:C.hint, marginTop:-8, marginBottom:10 }}>員工ID 會自動分配（EMP016、EMP017…）</div>}
           </>
         )}
 
-        <div style={S.label}>時薪（元）</div>
-        <input style={S.inp} type="number" value={rate} onChange={e=>setRate(e.target.value)}/>
+        {liveMode ? (
+          <>
+            <div style={S.label}>職位</div>
+            <select style={{ ...S.inp, cursor:"pointer" }} value={role} onChange={e=>setRole(e.target.value)}>
+              {STAFF_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
 
-        <div style={S.label}>班次開始時間</div>
-        <input style={S.inp} type="time" value={shift} onChange={e=>setShift(e.target.value)}/>
+            <div style={S.label}>所屬店</div>
+            <select style={{ ...S.inp, cursor:"pointer" }} value={branch} onChange={e=>setBranch(e.target.value)}>
+              {STAFF_BRANCHES.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
 
-        <div style={S.label}>顯示顏色</div>
-        <input style={{ ...S.inp, padding:4, height:42, cursor:"pointer" }} type="color"
-          value={color} onChange={e=>setColor(e.target.value)}/>
+            <div style={S.label}>可帶主題（複選）</div>
+            <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+              {STAFF_THEMES.map(t => {
+                const on = themes.includes(t);
+                return (
+                  <button key={t} onClick={()=>toggleTheme(t)} style={{
+                    padding:"6px 12px", borderRadius:99, fontSize:12, cursor:"pointer",
+                    fontFamily:"'Noto Sans TC', sans-serif",
+                    border: `1px solid ${on ? C.info.text+"66" : C.border}`,
+                    background: on ? C.info.bg : "transparent",
+                    color: on ? C.info.text : C.muted,
+                    fontWeight: on ? 500 : 400,
+                  }}>
+                    {on && "✓ "}{t}
+                  </button>
+                );
+              })}
+            </div>
 
-        <div style={S.label}>{isNew ? "登入密碼" : "重設密碼（留空則不更改）"}</div>
-        <input style={S.inp} type="password" value={password}
-          onChange={e=>setPassword(e.target.value)}
-          placeholder={isNew ? "設定初始密碼" : "輸入新密碼（可留空）"}/>
+            <div style={S.label}>時薪（元/小時，場控/桌遊/打卡用）</div>
+            <input style={S.inp} type="number" value={rate} onChange={e=>setRate(e.target.value)}/>
+
+            <div style={S.label}>LINE userId（選填，給通知用）</div>
+            <input style={S.inp} value={lineUserId} onChange={e=>setLineUserId(e.target.value)}
+              placeholder="U1234... 或留空"/>
+
+            <div style={S.label}>{isNew ? "登入密碼" : "重設密碼（留空則不改）"}</div>
+            <input style={S.inp} type="password" value={password}
+              onChange={e=>setPassword(e.target.value)}
+              placeholder={isNew ? "留空則預設＝員工ID" : "留空則維持原密碼"}/>
+            <div style={{ fontSize:10, color:C.hint, marginTop:-8, marginBottom:14, lineHeight:1.5 }}>
+              ※ 若員工主檔沒有「密碼」欄，會自動以員工ID當預設密碼
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={S.label}>時薪（元）</div>
+            <input style={S.inp} type="number" value={rate} onChange={e=>setRate(e.target.value)}/>
+
+            <div style={S.label}>班次開始時間</div>
+            <input style={S.inp} type="time" value={shift} onChange={e=>setShift(e.target.value)}/>
+
+            <div style={S.label}>顯示顏色</div>
+            <input style={{ ...S.inp, padding:4, height:42, cursor:"pointer" }} type="color"
+              value={color} onChange={e=>setColor(e.target.value)}/>
+
+            <div style={S.label}>{isNew ? "登入密碼" : "重設密碼（留空則不更改）"}</div>
+            <input style={S.inp} type="password" value={password}
+              onChange={e=>setPassword(e.target.value)}
+              placeholder={isNew ? "設定初始密碼" : "輸入新密碼（可留空）"}/>
+          </>
+        )}
 
         <button
           style={{ width:"100%", padding:13, border:"none", borderRadius:10, fontSize:14,
@@ -349,8 +437,8 @@ function StaffEditModal({ staff, isNew, onSave, onClose }) {
             background: canSave ? "#2A5CC0" : "#D0CEC8", color:"#FFF",
             fontFamily:"'Noto Sans TC', sans-serif", opacity: canSave ? 1 : 0.6 }}
           disabled={!canSave}
-          onClick={() => onSave({ name:name.trim(), rate:Number(rate)||180, shift, color, password })}>
-          {isNew ? "建立員工帳號" : "儲存變更"}
+          onClick={handleSave}>
+          {isNew ? (liveMode ? "新增到 Sheets" : "建立員工帳號") : "儲存變更"}
         </button>
       </div>
     </div>
@@ -1349,12 +1437,15 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
           isNew={editStaff.isNew}
           onSave={handleSaveStaff}
           onClose={()=>setEditStaff(null)}
+          liveMode={liveMode}
         />
       )}
 
       {deleteStaffId && (
         <ConfirmDialog
-          message={`確定要刪除員工「${staffData.find(s=>s.id===deleteStaffId)?.name}」？此操作無法復原，相關登入帳號也會一併移除。`}
+          message={liveMode
+            ? `將員工「${staffData.find(s=>s.id===deleteStaffId)?.name}」標記為「離職」？資料會保留在 Sheets 員工主檔（薪資/排班歷史不會消失），未來可重新啟用。`
+            : `確定要刪除員工「${staffData.find(s=>s.id===deleteStaffId)?.name}」？此操作無法復原，相關登入帳號也會一併移除。`}
           onConfirm={handleDeleteStaff}
           onCancel={()=>setDeleteStaffId(null)}
         />
