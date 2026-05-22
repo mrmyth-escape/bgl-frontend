@@ -22,6 +22,18 @@ async function callGAS(action, payload = {}) {
   return json.data;
 }
 
+// 場次狀態 UI 設定（icon / 顏色 / 文字）
+const SHIFT_STATUS_UI = {
+  skip:           { icon:'⏸',  label:'不計薪', color:'#7A786E' },
+  upcoming:       { icon:'⏳', label:'未開始', color:'#7A786E' },
+  warn_soon:      { icon:'⚠️', label:'即將開始，記得打卡', color:'#C07000' },
+  warn_missing:   { icon:'⚠️', label:'場進行中，還沒打卡', color:'#C07000' },
+  missed:         { icon:'❌', label:'未到 / 未打卡', color:'#C0292A' },
+  covered_early:  { icon:'☑️', label:'已對應，等開場', color:'#2A5CC0' },
+  in_progress:    { icon:'🟢', label:'進行中', color:'#1A7A4A' },
+  done:           { icon:'✅', label:'已完成', color:'#1A7A4A' },
+};
+
 // 把 GAS 員工資料轉成前端 StaffData 格式
 const STAFF_COLORS = ["#3B82F6","#EC4899","#10B981","#F59E0B","#8B5CF6","#06B6D4","#F97316","#84CC16","#A855F7","#14B8A6","#EAB308","#F43F5E","#6366F1","#22D3EE","#D946EF"];
 function gasStaffToLocal(gasStaff, idx) {
@@ -418,13 +430,13 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   const [clock,      setClock]      = useState(new Date());
   const [gpsOk,      setGpsOk]      = useState(false);
   const [toast,      setToast]      = useState({ show:false, msg:"" });
-  const [gasPunches, setGasPunches] = useState([]);    // 來自 GAS 的打卡紀錄
-  const [gasSched,   setGasSched]   = useState([]);    // 來自 GAS 的本月排班
-  const [loading,    setLoading]    = useState(false);
+  const [todayStatus, setTodayStatus] = useState(null);  // 從 getTodayStatus 來
+  const [gasSched,    setGasSched]    = useState([]);    // 本月排班（給「我的班表」用）
+  const [loading,     setLoading]     = useState(false);
 
   const me = staffData.find(s => s.id === account.staffId);
 
-  // 載入 GAS 真實資料
+  // 載入 GAS 真實資料：今日狀態 + 本月排班
   const reloadGAS = useCallback(async () => {
     if (!liveMode || !account.staffId) return;
     setLoading(true);
@@ -432,11 +444,11 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
       const today = new Date();
       const monthStart = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-01';
       const monthEnd   = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-31';
-      const [pData, sData] = await Promise.all([
-        callGAS("getMyPunches",   { empId: String(account.staffId), from: monthStart, to: monthEnd }),
+      const [status, sData] = await Promise.all([
+        callGAS("getTodayStatus", { empId: String(account.staffId) }),
         callGAS("getMySchedule",  { empId: String(account.staffId), from: monthStart, to: monthEnd }),
       ]);
-      setGasPunches(pData?.punches || []);
+      setTodayStatus(status);
       setGasSched(sData?.schedule || []);
     } catch (e) {
       console.warn("載入 GAS 資料失敗:", e.message);
@@ -447,23 +459,30 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
 
   useEffect(() => { reloadGAS(); }, [reloadGAS]);
 
-  // 統一 myLogs：liveMode 用 GAS 資料，demo 用本地
+  // 每 60 秒自動重抓今日狀態（場次狀態會隨時間變）
+  useEffect(() => {
+    if (!liveMode) return;
+    const id = setInterval(reloadGAS, 60000);
+    return () => clearInterval(id);
+  }, [liveMode, reloadGAS]);
+
+  // 統一 myLogs：liveMode 用 todayStatus.punches，demo 用本地 punchLogs
   const myLogs = useMemo(() => {
-    if (liveMode) {
-      // GAS 已是新到舊排序，要轉成 timeStr/type 跟原本一致
-      return gasPunches.map(p => ({
-        id: p.id,
-        staffId: p.empId,
-        name: p.name,
+    if (liveMode && todayStatus) {
+      // 注意：todayStatus.punches 只有今日；要顯示今日打卡列表足夠
+      return todayStatus.punches.map((p, i) => ({
+        id: 'gas-' + i,
+        staffId: account.staffId,
+        name: me?.name || '',
         type: p.type === '上班' ? 'in' : 'out',
         timeStr: p.time,
-        time: new Date(p.ts),
+        time: new Date(`${todayStatus.date}T${p.time}:00`),
         anomaly: null,
         color: me?.color || "#888",
       }));
     }
     return punchLogs.filter(l => l.staffId === account.staffId);
-  }, [liveMode, gasPunches, punchLogs, account.staffId, me]);
+  }, [liveMode, todayStatus, punchLogs, account.staffId, me]);
 
   useEffect(() => {
     const tick = setInterval(() => setClock(new Date()), 1000);
@@ -472,10 +491,14 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   }, []);
 
   useEffect(() => {
+    if (liveMode && todayStatus) {
+      setPunchState(todayStatus.currentState === 'in' ? 'in' : 'out');
+      return;
+    }
     if (myLogs.length === 0) { setPunchState("out"); return; }
     const last = [...myLogs].sort((a,b)=>a.time-b.time).pop();
     setPunchState(last.type === "in" ? "in" : "out");
-  }, [myLogs]);
+  }, [myLogs, liveMode, todayStatus]);
 
   function showToast(msg) {
     setToast({ show:true, msg });
@@ -502,18 +525,21 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
     if (liveMode) setTimeout(reloadGAS, 800);
   };
 
-  // 今日排班：liveMode 用 GAS schedule
+  // 今日排班：liveMode 用 todayStatus.shifts（含 status/pay）
   const todayStr = clock.getFullYear() + '-' + String(clock.getMonth()+1).padStart(2,'0') + '-' + String(clock.getDate()).padStart(2,'0');
   const myShifts = useMemo(() => {
     if (liveMode) {
-      return gasSched
-        .filter(s => String(s['日期'] || '').substring(0,10) === todayStr)
-        .map(s => ({
-          room: { name: s['主題'] || '?', color: '#4a4034', bg: '#f7f3ec' },
-          time: String(s['開場時間'] || '').substring(0,5),
-          role: s['角色'] || '',
-          client: '',
-        }));
+      return (todayStatus?.shifts || []).map(s => ({
+        openTime: s.openTime,
+        endTime: s.endTime,
+        theme: s.theme,
+        role: s.role,
+        category: s.category,
+        payType: s.payType,
+        pay: s.pay,
+        status: s.status,
+        lateMin: s.lateMin,
+      }));
     }
     const result = [];
     ROOMS.forEach(r => {
@@ -525,7 +551,7 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
       });
     });
     return result;
-  }, [liveMode, gasSched, todayStr, schedule, account.staffId]);
+  }, [liveMode, todayStatus, schedule, account.staffId]);
 
   // 本月全部排班（給「我的班表」tab 用）
   const myMonthShifts = useMemo(() => {
@@ -586,24 +612,100 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
               <div style={{ fontSize:12, color:C.muted, textAlign:"center", marginBottom:16 }}>
                 {fmtDate(clock)}
               </div>
-              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
-                background: gpsOk ? C.success.bg : C.warning.bg,
-                borderRadius:8, marginBottom:14, fontSize:12,
-                color: gpsOk ? C.success.text : C.warning.text }}>
-                <div style={{ width:7, height:7, borderRadius:"50%", flexShrink:0,
-                  background: gpsOk ? "#0F9B6A" : "#C07000" }}/>
-                {gpsOk ? "GPS 已確認：台中市門市 (43m)" : "GPS 定位確認中..."}
-              </div>
-              <div style={S.label}>今日排班</div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
-                {myShifts.slice(0,4).map((s,i) => (
-                  <span key={i} style={{ padding:"4px 10px", borderRadius:99, fontSize:12,
-                    background:s.room.bg, color:s.room.color, fontWeight:500 }}>
-                    {s.room.name} {s.time}
+
+              {/* 目前打卡狀態徽章 */}
+              {liveMode && todayStatus && (
+                <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
+                  background: todayStatus.currentState === 'in' ? C.success.bg : C.tabBg,
+                  borderRadius:8, marginBottom:12, fontSize:13,
+                  color: todayStatus.currentState === 'in' ? C.success.text : C.muted }}>
+                  <div style={{ width:8, height:8, borderRadius:"50%", flexShrink:0,
+                    background: todayStatus.currentState === 'in' ? "#0F9B6A" : "#B0ADA4" }}/>
+                  <span style={{ fontWeight:500 }}>
+                    {todayStatus.currentState === 'in' ? '上班中' : todayStatus.currentState === 'out' ? '下班中' : '今日尚未打卡'}
                   </span>
-                ))}
-                {myShifts.length===0 && <span style={{ fontSize:12, color:C.hint }}>今日無排班</span>}
+                  {todayStatus.stateSince && (
+                    <span style={{ marginLeft:'auto', fontSize:11 }}>從 {todayStatus.stateSince} 起</span>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 12px",
+                background: gpsOk ? C.success.bg : C.warning.bg,
+                borderRadius:8, marginBottom:14, fontSize:11,
+                color: gpsOk ? C.success.text : C.warning.text }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", flexShrink:0,
+                  background: gpsOk ? "#0F9B6A" : "#C07000" }}/>
+                {gpsOk ? "GPS 已確認" : "GPS 定位中..."}
               </div>
+
+              {/* 提醒：場次即將開始或進行中但未打卡 */}
+              {liveMode && todayStatus?.nextUnpunchedShift && (
+                <div style={{ padding:"10px 12px", marginBottom:14, borderRadius:8,
+                  background:C.warning.bg, color:C.warning.text, fontSize:12, lineHeight:1.6 }}>
+                  ⚠️ <b>{todayStatus.nextUnpunchedShift.openTime} {todayStatus.nextUnpunchedShift.theme}</b>
+                  {' '}
+                  {todayStatus.nextUnpunchedShift.minutesUntil < 0
+                    ? `已開場 ${-todayStatus.nextUnpunchedShift.minutesUntil} 分鐘`
+                    : `${todayStatus.nextUnpunchedShift.minutesUntil} 分鐘後開場`}
+                  ，記得打上班卡！
+                </div>
+              )}
+
+              <div style={S.label}>
+                {liveMode ? `今日場次（${myShifts.length} 場）` : '今日排班'}
+              </div>
+
+              {liveMode ? (
+                myShifts.length === 0 ? (
+                  <div style={{ fontSize:13, color:C.hint, padding:"10px 0", textAlign:"center" }}>今日無排班</div>
+                ) : (
+                  <div style={{ marginBottom:14 }}>
+                    {myShifts.map((s,i) => {
+                      const cfg = SHIFT_STATUS_UI[s.status] || SHIFT_STATUS_UI.upcoming;
+                      return (
+                        <div key={i} style={{ display:"flex", alignItems:"center", padding:"8px 4px",
+                          borderBottom: i===myShifts.length-1 ? 'none' : `1px solid ${C.border}` }}>
+                          <span style={{ fontSize:16, marginRight:8 }}>{cfg.icon}</span>
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontSize:13, fontWeight:500 }}>
+                              {s.openTime} {s.theme} <span style={{ color:C.muted, fontSize:11 }}>{s.role}</span>
+                            </div>
+                            <div style={{ fontSize:11, color:cfg.color }}>
+                              {cfg.label}
+                              {s.lateMin > 0 && <span style={{ marginLeft:6, color:C.warning.text }}>遲到 {s.lateMin} 分</span>}
+                            </div>
+                          </div>
+                          <div style={{ textAlign:'right' }}>
+                            <div style={{ fontSize:13, fontWeight:600, color: s.pay > 0 ? C.text : C.hint }}>
+                              {s.pay > 0 ? `＄${s.pay}` : '—'}
+                            </div>
+                            <div style={{ fontSize:10, color:C.muted }}>
+                              {s.payType === 'per_session' ? '場次制' : s.payType === 'hourly' ? '時薪制' : ''}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                      padding:"10px 4px", borderTop:`2px solid ${C.border}`, marginTop:4 }}>
+                      <span style={{ fontSize:13, color:C.muted }}>本日累計</span>
+                      <span style={{ fontSize:18, fontWeight:600 }}>＄{(todayStatus?.todayPaid || 0).toLocaleString()}</span>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:16 }}>
+                  {myShifts.slice(0,4).map((s,i) => (
+                    <span key={i} style={{ padding:"4px 10px", borderRadius:99, fontSize:12,
+                      background:s.room.bg, color:s.room.color, fontWeight:500 }}>
+                      {s.room.name} {s.time}
+                    </span>
+                  ))}
+                  {myShifts.length===0 && <span style={{ fontSize:12, color:C.hint }}>今日無排班</span>}
+                </div>
+              )}
+
               <button style={S.punchBtn(punchState==="out"?"in":"out", !gpsOk)}
                 onClick={handlePunch} disabled={!gpsOk}>
                 {!gpsOk ? "等待 GPS 驗證..." : punchState==="out" ? "上班打卡" : "下班打卡"}
