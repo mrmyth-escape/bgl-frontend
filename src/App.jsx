@@ -1082,6 +1082,8 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [tab,            setTab]           = useState("overview");
   const [viewMode,       setViewMode]      = useState("timeline");
   const [adminOverview,  setAdminOverview] = useState(null);
+  const [monthSalary,    setMonthSalary]   = useState(null);
+  const [salaryLoading,  setSalaryLoading] = useState(false);
 
   // 從 GAS 抓真實 admin overview，每分鐘 reload
   useEffect(() => {
@@ -1097,6 +1099,26 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     const id = setInterval(load, 60000);
     return () => { cancel = true; clearInterval(id); };
   }, [liveMode]);
+
+  // 載入本月薪資（lazy：第一次切到薪資 tab 時抓）
+  const reloadMonthSalary = useCallback(async () => {
+    if (!liveMode) return;
+    setSalaryLoading(true);
+    try {
+      const now = new Date();
+      const month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+      const data = await callGAS('calculateMonthlySalary', { month });
+      setMonthSalary(data);
+    } catch (e) {
+      console.warn('calculateMonthlySalary 失敗:', e.message);
+    } finally {
+      setSalaryLoading(false);
+    }
+  }, [liveMode]);
+
+  useEffect(() => {
+    if (liveMode && tab === 'salary' && !monthSalary) reloadMonthSalary();
+  }, [liveMode, tab, monthSalary, reloadMonthSalary]);
   const [selectedDate,   setSelectedDate]  = useState(new Date());
   const [selectedRoom,   setSelectedRoom]  = useState("A");
   const [selectedBranch, setSelectedBranch]= useState("大忠店");
@@ -1455,7 +1477,69 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
         )}
 
         {/* ── 打卡管理 ── */}
-        {tab==="clock" && (
+        {tab==="clock" && (liveMode && adminOverview ? (
+          <div>
+            <div style={S.card}>
+              <div style={S.label}>今日打卡明細（{adminOverview.todayPunches.length} 筆）</div>
+              {adminOverview.todayPunches.length === 0
+                ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>今日尚無打卡紀錄</div>
+                : adminOverview.todayPunches.slice().reverse().map((p,i,arr) => (
+                    <div key={i} style={{ ...S.row(i===arr.length-1), gap:8 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:13, fontWeight:500 }}>
+                          {p.name} <span style={{ fontSize:10, color:C.muted }}>{p.empId}</span>
+                        </div>
+                        <div style={{ fontSize:11, color:C.muted }}>
+                          {p.type==='in' ? '上班打卡' : '下班打卡'} {p.time}
+                        </div>
+                        {p.lateMin > 0 && (
+                          <div style={{ fontSize:11, color:C.warning.text, marginTop:2 }}>
+                            遲到 {p.lateMin} 分鐘（首場 {p.againstShift}）
+                          </div>
+                        )}
+                      </div>
+                      <span style={S.badge(
+                        p.lateMin > 0 ? "amber" :
+                        p.type === "in" ? "green" : "gray"
+                      )}>
+                        {p.lateMin > 0 ? `遲到 ${p.lateMin}m` : (p.type==='in' ? '上班' : '下班')}
+                      </span>
+                    </div>
+                  ))
+              }
+            </div>
+            <div style={S.card}>
+              <div style={S.label}>今日異常摘要</div>
+              {[
+                ["遲到",      adminOverview.lateCount, "件"],
+                ["未到",      adminOverview.noShowCount, "人"],
+                ["異常合計",  adminOverview.anomalyCount, "件"],
+              ].map(([k,v,unit],i,arr) => (
+                <div key={k} style={{ ...S.row(i===arr.length-1), fontSize:13 }}>
+                  <span style={{ color:C.muted }}>{k}</span>
+                  <span style={{ fontWeight:500, color: v>0 ? C.danger.text : C.text }}>
+                    {v} {unit}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {adminOverview.noShowList && adminOverview.noShowList.length > 0 && (
+              <div style={S.card}>
+                <div style={{ ...S.label, color:C.danger.text }}>⚠️ 未到員工</div>
+                {adminOverview.noShowList.map((s,i,arr) => (
+                  <div key={s.empId} style={S.row(i===arr.length-1)}>
+                    <div>
+                      <div style={{ fontSize:13, fontWeight:500 }}>{s.name} <span style={{ fontSize:10, color:C.muted }}>{s.empId}</span></div>
+                      <div style={{ fontSize:11, color:C.muted }}>首場 {s.firstShiftTime} · 今日 {s.todayShiftCount} 場</div>
+                    </div>
+                    <span style={S.badge("amber")}>未打卡</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          // demo 模式 fallback
           <div>
             <div style={S.card}>
               <div style={S.label}>今日打卡紀錄</div>
@@ -1498,31 +1582,101 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
                   })
               }
             </div>
-            <div style={S.card}>
-              <div style={S.label}>今日異常摘要</div>
-              {[
-                ["遲到",   anomalies.filter(l=>l.anomaly?.includes("遲到")).length],
-                ["早退",   anomalies.filter(l=>l.anomaly?.includes("早退")).length],
-                ["缺勤",   0],
-                ["待確認", pendingCount],
-              ].map(([k,v],i,arr) => (
-                <div key={k} style={{ ...S.row(i===arr.length-1), fontSize:13 }}>
-                  <span style={{ color:C.muted }}>{k}</span>
-                  <span style={{ fontWeight:500,
-                    color: k==="待確認" && v>0 ? C.info.text : v>0 ? C.danger.text : C.text }}>
-                    {v} {k==="待確認" ? "筆" : "件"}
-                  </span>
-                </div>
-              ))}
-            </div>
           </div>
-        )}
+        ))}
 
         {/* ── 薪資 ── */}
-        {tab==="salary" && (
+        {tab==="salary" && (liveMode ? (
+          <div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
+              <div style={{ fontSize:14, fontWeight:600 }}>
+                {monthSalary?.month || (new Date().getFullYear() + '-' + String(new Date().getMonth()+1).padStart(2,'0'))} 薪資
+              </div>
+              <button onClick={reloadMonthSalary} disabled={salaryLoading}
+                style={{ fontSize:11, padding:"4px 10px", border:`1px solid ${C.border}`,
+                  borderRadius:6, background:"transparent", color:C.muted,
+                  cursor: salaryLoading ? "wait" : "pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>
+                {salaryLoading ? "計算中..." : "↻ 重算"}
+              </button>
+            </div>
+
+            {!monthSalary && !salaryLoading && (
+              <div style={{ ...S.card, textAlign:"center", color:C.hint, fontSize:13 }}>
+                點「↻ 重算」載入本月薪資
+              </div>
+            )}
+
+            {salaryLoading && (
+              <div style={{ ...S.card, textAlign:"center", color:C.muted, fontSize:13 }}>
+                計算中...
+              </div>
+            )}
+
+            {monthSalary && (
+              <>
+                <div style={{ ...S.card, background:C.info.bg, marginBottom:"0.75rem" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <span style={{ color:C.info.text, fontSize:13 }}>本月應付薪資合計</span>
+                    <span style={{ fontWeight:700, fontSize:20, color:C.info.text }}>
+                      ＄{(monthSalary.monthTotal || 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div style={{ ...S.card, marginBottom:"0.75rem" }}>
+                  <div style={S.label}>員工薪資（{monthSalary.perEmployee.length}）</div>
+                  {monthSalary.perEmployee.length === 0
+                    ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>本月無打卡資料</div>
+                    : monthSalary.perEmployee.map((e,i,arr) => {
+                        const cats = Object.entries(e.byCat || {})
+                          .filter(([, v]) => v.pay > 0 || v.sessions > 0 || v.missed > 0)
+                          .sort(([, a], [, b]) => b.pay - a.pay);
+                        return (
+                          <div key={e.empId} style={{ padding:"10px 4px",
+                            borderBottom: i===arr.length-1 ? 'none' : `1px solid ${C.border}` }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
+                              <div>
+                                <span style={{ fontSize:14, fontWeight:500 }}>{e.name}</span>
+                                <span style={{ fontSize:10, color:C.muted, marginLeft:6 }}>{e.empId}</span>
+                              </div>
+                              <span style={{ fontSize:15, fontWeight:700, color:e.totalPay>0 ? C.text : C.hint }}>
+                                ＄{e.totalPay.toLocaleString()}
+                              </span>
+                            </div>
+                            <div style={{ fontSize:10, color:C.muted, marginTop:3 }}>
+                              {e.totalShifts}排 · 到 {e.totalCovered}
+                              {e.totalLate>0 && <span style={{ color:C.warning.text }}> · 遲到 {e.totalLate}</span>}
+                              {e.totalMissed>0 && <span style={{ color:C.danger.text }}> · 缺 {e.totalMissed}</span>}
+                            </div>
+                            {cats.length > 0 && (
+                              <div style={{ marginTop:6, display:"flex", flexWrap:"wrap", gap:4 }}>
+                                {cats.map(([cat, v]) => (
+                                  <span key={cat} style={{ fontSize:10, padding:"2px 6px", borderRadius:6,
+                                    background: v.pay > 0 ? '#eef4ff' : '#f5f3ee',
+                                    color: v.pay > 0 ? '#2A5CC0' : C.muted }}>
+                                    {cat}: {v.sessions > 0 ? `${v.sessions}場` : v.missed > 0 ? `缺${v.missed}` : `${v.hours.toFixed(1)}h`} ＄{Math.round(v.pay)}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                  }
+                </div>
+
+                <div style={{ fontSize:10, color:C.hint, textAlign:"center" }}>
+                  資料來源：GAS 打卡紀錄 + 排班結果分頁<br/>
+                  {monthSalary.notes}
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          // demo 模式 fallback
           <div>
             <div style={{ ...S.card, marginBottom:"0.75rem" }}>
-              <div style={S.label}>月薪資總表</div>
+              <div style={S.label}>月薪資總表（範例）</div>
               {salaryRows.map((s,i) => (
                 <div key={s.id} style={S.row(i===salaryRows.length-1)}>
                   <div>
@@ -1531,18 +1685,6 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
                   </div>
                   <div style={{ textAlign:"right" }}>
                     <div style={{ fontSize:13, fontWeight:500 }}>${s.net.toLocaleString()}</div>
-                    <div style={{ display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", marginTop:4 }}>
-                      <button onClick={()=>setStaffData(prev=>prev.map((x,j)=>j===i?{...x,deduct:x.deduct+100}:x))}
-                        style={{ width:24,height:24,borderRadius:"50%",border:`1px solid ${C.border}`,
-                          background:"transparent",color:C.muted,cursor:"pointer",fontSize:15,lineHeight:1 }}>−</button>
-                      <span style={{ fontSize:11, minWidth:46, textAlign:"center",
-                        color: s.bonus-s.deduct>=0 ? C.success.text : C.danger.text }}>
-                        {s.bonus-s.deduct>=0?"+":""}{s.bonus-s.deduct}
-                      </span>
-                      <button onClick={()=>setStaffData(prev=>prev.map((x,j)=>j===i?{...x,bonus:x.bonus+100}:x))}
-                        style={{ width:24,height:24,borderRadius:"50%",border:`1px solid ${C.border}`,
-                          background:"transparent",color:C.muted,cursor:"pointer",fontSize:15,lineHeight:1 }}>+</button>
-                    </div>
                   </div>
                 </div>
               ))}
@@ -1554,7 +1696,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
               </div>
             </div>
           </div>
-        )}
+        ))}
 
         {/* ── 設定 ── */}
         {tab==="settings" && (
