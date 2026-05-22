@@ -384,12 +384,38 @@ function LoginScreen({ onLogin, accounts, liveMode, gasError }) {
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [err,  setErr]  = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const doLogin = () => {
+  const showErr = (msg) => {
+    setErr(msg || true);
+    setTimeout(() => setErr(false), 2200);
+  };
+
+  const doLogin = async () => {
+    if (busy) return;
+    // admin 帳號：liveMode 時走 GAS verifyAdmin（與 GAS 後台同一組密碼）
+    if ((user === 'admin' || user === '管理員') && liveMode) {
+      setBusy(true);
+      try {
+        const res = await callGAS('verifyAdmin', { password: pass });
+        if (res?.valid) {
+          // 存進 sessionStorage 給 GasAdminEmbed SSO 用
+          try { sessionStorage.setItem('bgl_admin_pwd', pass); } catch (e) {}
+          onLogin({ role: 'admin' }, user);
+        } else {
+          showErr('管理者密碼錯誤');
+        }
+      } catch (e) {
+        showErr('連線 GAS 失敗：' + e.message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // 一般帳號（員工或 demo 模式 admin）：用 client side accounts 比對
     const acc = accounts[user];
     if (!acc || acc.pass !== pass) {
-      setErr(true);
-      setTimeout(() => setErr(false), 2000);
+      showErr('帳號或密碼錯誤');
       return;
     }
     onLogin(acc, user);
@@ -414,7 +440,7 @@ function LoginScreen({ onLogin, accounts, liveMode, gasError }) {
       <div style={S.card}>
         {err && (
           <div style={{ background:C.danger.bg, color:C.danger.text, fontSize:12, padding:"8px 12px", borderRadius:8, marginBottom:12, textAlign:"center" }}>
-            帳號或密碼錯誤
+            {typeof err === 'string' ? err : '帳號或密碼錯誤'}
           </div>
         )}
         <div style={S.label}>帳號</div>
@@ -425,12 +451,15 @@ function LoginScreen({ onLogin, accounts, liveMode, gasError }) {
           placeholder="請輸入密碼" onKeyDown={e=>e.key==="Enter"&&doLogin()} />
         <button
           style={{ width:"100%", padding:13, border:"none", borderRadius:10, fontSize:15, fontWeight:500,
-            cursor:"pointer", background:"#2A5CC0", color:"#FFF",
+            cursor: busy ? "wait" : "pointer", background: busy ? "#94a8d6" : "#2A5CC0", color:"#FFF",
             fontFamily:"'Noto Sans TC', sans-serif", marginTop:4 }}
-          onClick={doLogin}>登入</button>
+          onClick={doLogin} disabled={busy}>
+          {busy ? "登入中..." : "登入"}
+        </button>
         <div style={{ fontSize:11, color:C.hint, textAlign:"center", marginTop:14, lineHeight:1.8 }}>
-          測試帳號<br/>
-          員工：<b>staff</b> / staff123　　管理者：<b>admin</b> / admin999
+          {liveMode
+            ? <>員工：<b>員工ID 或 姓名</b>（預設密碼＝員工ID）<br/>管理者：<b>admin</b> / GAS 後台密碼</>
+            : <>員工：<b>staff</b> / staff123　　管理者：<b>admin</b> / admin999</>}
         </div>
       </div>
     </div>
@@ -1000,7 +1029,10 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
 // ── GAS 排班後台嵌入元件（全螢幕 iframe + SSO 自動登入）────
 function GasAdminEmbed({ onClose }) {
   const iframeRef = useRef(null);
-  const ADMIN_PASS = "admin1234";
+  // 從 sessionStorage 拿登入時用過的 GAS 密碼（admin 登入時已存）
+  const ADMIN_PASS = (typeof window !== 'undefined' && window.sessionStorage)
+    ? (sessionStorage.getItem('bgl_admin_pwd') || 'admin1234')
+    : 'admin1234';
 
   useEffect(() => {
     const handler = (e) => {
@@ -1046,9 +1078,25 @@ function GasAdminEmbed({ onClose }) {
 }
 
 // ── 管理者版 ──────────────────────────────────────────────
-function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout }) {
+function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, setAccounts, onLogout, liveMode }) {
   const [tab,            setTab]           = useState("overview");
   const [viewMode,       setViewMode]      = useState("timeline");
+  const [adminOverview,  setAdminOverview] = useState(null);
+
+  // 從 GAS 抓真實 admin overview，每分鐘 reload
+  useEffect(() => {
+    if (!liveMode) return;
+    let cancel = false;
+    const load = async () => {
+      try {
+        const data = await callGAS('getAdminOverview');
+        if (!cancel) setAdminOverview(data);
+      } catch (e) { console.warn('getAdminOverview 失敗:', e.message); }
+    };
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancel = true; clearInterval(id); };
+  }, [liveMode]);
   const [selectedDate,   setSelectedDate]  = useState(new Date());
   const [selectedRoom,   setSelectedRoom]  = useState("A");
   const [selectedBranch, setSelectedBranch]= useState("大忠店");
@@ -1262,12 +1310,20 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
         {tab==="overview" && (
           <div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:"1rem" }}>
-              {[
-                ["今日出勤", `${presentStaff.length} 人`, null],
-                ["異常打卡", `${anomalies.length} 件`,    anomalies.length>0?C.danger.text:null],
-                ["今日場次", `${totalBookings} 場`,       null],
-                ["本月薪資", "$34.2k",                    null],
-              ].map(([label,val,color]) => (
+              {(() => {
+                const todayAtt = liveMode && adminOverview ? adminOverview.todayAttendance : presentStaff.length;
+                const anomalyCnt = liveMode && adminOverview ? adminOverview.anomalyCount : anomalies.length;
+                const shiftCnt = liveMode && adminOverview ? adminOverview.todayShiftCount : totalBookings;
+                const monthSalary = liveMode && adminOverview
+                  ? `＄${(adminOverview.monthSalary/1000).toFixed(1)}k`
+                  : "$34.2k";
+                return [
+                  ["今日出勤", `${todayAtt} 人`, null],
+                  ["異常打卡", `${anomalyCnt} 件`, anomalyCnt > 0 ? C.danger.text : null],
+                  ["今日場次", `${shiftCnt} 場`, null],
+                  ["本月薪資", monthSalary, null],
+                ];
+              })().map(([label,val,color]) => (
                 <div key={label} style={S.metric}>
                   <div style={S.label}>{label}</div>
                   <div style={{ fontSize:22, fontWeight:600, color:color||C.text }}>{val}</div>
@@ -1285,27 +1341,111 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
               {syncStatus==="loading" ? "同步中..." : "⟳  立即同步今日預約"}
             </button>
 
-            <div style={S.card}>
-              <div style={S.label}>目前在場員工</div>
-              {presentStaff.length === 0
-                ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>目前無人在場</div>
-                : presentStaff.map((l,i) => {
-                    const sf = staffById(l.staffId, staffData);
-                    return (
-                      <div key={i} style={S.row(i===presentStaff.length-1)}>
+            {/* liveMode：直接顯示 GAS 真實員工狀態 */}
+            {liveMode && adminOverview ? (
+              <>
+                <div style={S.card}>
+                  <div style={S.label}>目前在場員工（{adminOverview.presentStaff.length}）</div>
+                  {adminOverview.presentStaff.length === 0
+                    ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>目前無人在場</div>
+                    : adminOverview.presentStaff.map((s,i,arr) => (
+                        <div key={s.empId} style={S.row(i===arr.length-1)}>
+                          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                            <Avatar name={s.name||"?"} color="#5b8a3a" size={34}/>
+                            <div>
+                              <div style={{ fontSize:13, fontWeight:500 }}>{s.name} <span style={{ color:C.muted, fontSize:10 }}>{s.empId}</span></div>
+                              <div style={{ fontSize:11, color:C.muted }}>上班 {s.firstIn} · 今日 {s.todayShiftCount} 場</div>
+                            </div>
+                          </div>
+                          <span style={S.badge(s.lateMin>0?"amber":"green")}>
+                            {s.lateMin>0 ? `遲到 ${s.lateMin} 分` : "在場"}
+                          </span>
+                        </div>
+                      ))
+                  }
+                </div>
+
+                {adminOverview.finishedStaff.length > 0 && (
+                  <div style={S.card}>
+                    <div style={S.label}>今日已下班（{adminOverview.finishedStaff.length}）</div>
+                    {adminOverview.finishedStaff.map((s,i,arr) => (
+                      <div key={s.empId} style={S.row(i===arr.length-1)}>
                         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                          <Avatar name={l.name} color={sf?.color||"#888"} size={34}/>
+                          <Avatar name={s.name||"?"} color="#9a8f7d" size={34}/>
                           <div>
-                            <div style={{ fontSize:13, fontWeight:500 }}>{l.name}</div>
-                            <div style={{ fontSize:11, color:C.muted }}>上班 {l.timeStr}</div>
+                            <div style={{ fontSize:13, fontWeight:500 }}>{s.name} <span style={{ color:C.muted, fontSize:10 }}>{s.empId}</span></div>
+                            <div style={{ fontSize:11, color:C.muted }}>{s.firstIn} 上班 → {s.lastActionTime} 下班</div>
                           </div>
                         </div>
-                        <span style={S.badge(l.anomaly?"amber":"green")}>{l.anomaly||"在場"}</span>
+                        <span style={S.badge("gray")}>已下班</span>
                       </div>
-                    );
-                  })
-              }
-            </div>
+                    ))}
+                  </div>
+                )}
+
+                {adminOverview.noShowList && adminOverview.noShowList.length > 0 && (
+                  <div style={S.card}>
+                    <div style={{ ...S.label, color: C.danger.text }}>⚠️ 排班但未打卡（{adminOverview.noShowList.length}）</div>
+                    {adminOverview.noShowList.map((s,i,arr) => (
+                      <div key={s.empId} style={S.row(i===arr.length-1)}>
+                        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                          <Avatar name={s.name||"?"} color={C.danger.text} size={34}/>
+                          <div>
+                            <div style={{ fontSize:13, fontWeight:500 }}>{s.name} <span style={{ color:C.muted, fontSize:10 }}>{s.empId}</span></div>
+                            <div style={{ fontSize:11, color:C.muted }}>首場 {s.firstShiftTime} · 今日 {s.todayShiftCount} 場</div>
+                          </div>
+                        </div>
+                        <span style={S.badge("amber")}>未到</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={S.card}>
+                  <div style={S.label}>今日預約（{adminOverview.todayBookings.length}）</div>
+                  {adminOverview.todayBookings.length === 0
+                    ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>今日無預約</div>
+                    : adminOverview.todayBookings.map((b,i,arr) => (
+                        <div key={b.bookingId||i} style={S.row(i===arr.length-1)}>
+                          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                            <div style={{ width:8, height:8, borderRadius:'50%', background:themeColor(b.theme), flexShrink:0 }}/>
+                            <div>
+                              <div style={{ fontSize:13, fontWeight:500 }}>{b.time} {b.theme}</div>
+                              <div style={{ fontSize:11, color:C.muted }}>
+                                {b.contact || '—'}{b.headcount ? ` · ${b.headcount}人` : ''}
+                                {b.source==='simplybook' && <span style={{ color:'#2A5CC0', marginLeft:6 }}>SB</span>}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                  }
+                </div>
+              </>
+            ) : (
+              // demo 模式 fallback
+              <div style={S.card}>
+                <div style={S.label}>目前在場員工</div>
+                {presentStaff.length === 0
+                  ? <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>目前無人在場</div>
+                  : presentStaff.map((l,i) => {
+                      const sf = staffById(l.staffId, staffData);
+                      return (
+                        <div key={i} style={S.row(i===presentStaff.length-1)}>
+                          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                            <Avatar name={l.name} color={sf?.color||"#888"} size={34}/>
+                            <div>
+                              <div style={{ fontSize:13, fontWeight:500 }}>{l.name}</div>
+                              <div style={{ fontSize:11, color:C.muted }}>上班 {l.timeStr}</div>
+                            </div>
+                          </div>
+                          <span style={S.badge(l.anomaly?"amber":"green")}>{l.anomaly||"在場"}</span>
+                        </div>
+                      );
+                    })
+                }
+              </div>
+            )}
           </div>
         )}
 
@@ -1659,6 +1799,7 @@ export default function App() {
       accounts={accounts}
       setAccounts={setAccounts}
       onLogout={handleLogout}
+      liveMode={liveMode}
     />
   );
 }
