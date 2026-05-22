@@ -412,15 +412,58 @@ function LoginScreen({ onLogin, accounts, liveMode, gasError }) {
 }
 
 // ── 員工版 ────────────────────────────────────────────────
-function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }) {
+function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, liveMode }) {
   const [tab,        setTab]        = useState("punch");
   const [punchState, setPunchState] = useState("out");
   const [clock,      setClock]      = useState(new Date());
   const [gpsOk,      setGpsOk]      = useState(false);
   const [toast,      setToast]      = useState({ show:false, msg:"" });
+  const [gasPunches, setGasPunches] = useState([]);    // 來自 GAS 的打卡紀錄
+  const [gasSched,   setGasSched]   = useState([]);    // 來自 GAS 的本月排班
+  const [loading,    setLoading]    = useState(false);
 
   const me = staffData.find(s => s.id === account.staffId);
-  const myLogs = punchLogs.filter(l => l.staffId === account.staffId);
+
+  // 載入 GAS 真實資料
+  const reloadGAS = useCallback(async () => {
+    if (!liveMode || !account.staffId) return;
+    setLoading(true);
+    try {
+      const today = new Date();
+      const monthStart = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-01';
+      const monthEnd   = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-31';
+      const [pData, sData] = await Promise.all([
+        callGAS("getMyPunches",   { empId: String(account.staffId), from: monthStart, to: monthEnd }),
+        callGAS("getMySchedule",  { empId: String(account.staffId), from: monthStart, to: monthEnd }),
+      ]);
+      setGasPunches(pData?.punches || []);
+      setGasSched(sData?.schedule || []);
+    } catch (e) {
+      console.warn("載入 GAS 資料失敗:", e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [liveMode, account.staffId]);
+
+  useEffect(() => { reloadGAS(); }, [reloadGAS]);
+
+  // 統一 myLogs：liveMode 用 GAS 資料，demo 用本地
+  const myLogs = useMemo(() => {
+    if (liveMode) {
+      // GAS 已是新到舊排序，要轉成 timeStr/type 跟原本一致
+      return gasPunches.map(p => ({
+        id: p.id,
+        staffId: p.empId,
+        name: p.name,
+        type: p.type === '上班' ? 'in' : 'out',
+        timeStr: p.time,
+        time: new Date(p.ts),
+        anomaly: null,
+        color: me?.color || "#888",
+      }));
+    }
+    return punchLogs.filter(l => l.staffId === account.staffId);
+  }, [liveMode, gasPunches, punchLogs, account.staffId, me]);
 
   useEffect(() => {
     const tick = setInterval(() => setClock(new Date()), 1000);
@@ -432,7 +475,7 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }
     if (myLogs.length === 0) { setPunchState("out"); return; }
     const last = [...myLogs].sort((a,b)=>a.time-b.time).pop();
     setPunchState(last.type === "in" ? "in" : "out");
-  }, [punchLogs]);
+  }, [myLogs]);
 
   function showToast(msg) {
     setToast({ show:true, msg });
@@ -440,23 +483,38 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }
   }
 
   function checkAnomaly(staff, timeStr) {
+    if (!staff?.shift) return null;
     const [h,m] = timeStr.split(":").map(Number);
     const [sh,sm] = staff.shift.split(":").map(Number);
     const diff = h*60+m - (sh*60+sm);
     return diff > 5 ? `遲到 ${diff} 分鐘` : null;
   }
 
-  const handlePunch = () => {
+  const handlePunch = async () => {
     if (!gpsOk) return;
     const now = new Date();
     const timeStr = now.toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit",hour12:false});
     const newType = punchState === "out" ? "in" : "out";
     const anomaly = newType === "in" && me ? checkAnomaly(me, timeStr) : null;
-    onPunch({ id:nextPunchId(), staffId:me.id, name:me.name, type:newType, timeStr, time:now, anomaly, color:me.color });
+    await onPunch({ id:nextPunchId(), staffId:me.id, name:me.name, type:newType, timeStr, time:now, anomaly, color:me.color });
     showToast(newType === "in" ? `上班打卡成功 ${timeStr} ✓` : `下班打卡成功 ${timeStr} ✓`);
+    // 打卡後重抓 GAS 確認寫進去了
+    if (liveMode) setTimeout(reloadGAS, 800);
   };
 
+  // 今日排班：liveMode 用 GAS schedule
+  const todayStr = clock.getFullYear() + '-' + String(clock.getMonth()+1).padStart(2,'0') + '-' + String(clock.getDate()).padStart(2,'0');
   const myShifts = useMemo(() => {
+    if (liveMode) {
+      return gasSched
+        .filter(s => String(s['日期'] || '').substring(0,10) === todayStr)
+        .map(s => ({
+          room: { name: s['主題'] || '?', color: '#4a4034', bg: '#f7f3ec' },
+          time: String(s['開場時間'] || '').substring(0,5),
+          role: s['角色'] || '',
+          client: '',
+        }));
+    }
     const result = [];
     ROOMS.forEach(r => {
       SLOTS.forEach(t => {
@@ -467,7 +525,20 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }
       });
     });
     return result;
-  }, [schedule, account.staffId]);
+  }, [liveMode, gasSched, todayStr, schedule, account.staffId]);
+
+  // 本月全部排班（給「我的班表」tab 用）
+  const myMonthShifts = useMemo(() => {
+    if (!liveMode) return [];
+    return gasSched
+      .map(s => ({
+        date: String(s['日期'] || '').substring(0,10),
+        time: String(s['開場時間'] || '').substring(0,5),
+        theme: s['主題'] || '',
+        role: s['角色'] || '',
+      }))
+      .sort((a,b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+  }, [liveMode, gasSched]);
 
   const salaryInfo = useMemo(() => {
     const workedH = calcHours(account.staffId, punchLogs);
@@ -558,26 +629,65 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }
 
         {tab==="schedule" && (
           <div style={S.card}>
-            <div style={S.label}>本週我的班次</div>
-            {myShifts.length === 0
-              ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本週暫無班次</div>
-              : myShifts.map((s,i) => (
-                <div key={i} style={S.row(i===myShifts.length-1)}>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                    <div style={{ width:8, height:8, borderRadius:"50%", background:s.room.color, flexShrink:0 }}/>
-                    <div>
-                      <div style={{ fontSize:13, fontWeight:500 }}>{s.room.name}</div>
-                      <div style={{ fontSize:11, color:C.muted }}>{s.time}{s.client ? ` · ${s.client}` : ""}</div>
+            <div style={S.label}>{liveMode ? `本月排班（共 ${myMonthShifts.length} 場）` : "本週我的班次"}</div>
+            {liveMode ? (
+              myMonthShifts.length === 0
+                ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本月無排班</div>
+                : myMonthShifts.map((s,i) => {
+                  const isToday = s.date === todayStr;
+                  const isPast = s.date < todayStr;
+                  return (
+                    <div key={i} style={S.row(i===myMonthShifts.length-1)}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <div style={{ width:50, fontSize:12, color:C.muted, textAlign:"left" }}>
+                          {s.date.substring(5)}
+                        </div>
+                        <div>
+                          <div style={{ fontSize:13, fontWeight:500 }}>{s.theme}</div>
+                          <div style={{ fontSize:11, color:C.muted }}>{s.time} · {s.role}</div>
+                        </div>
+                      </div>
+                      <span style={S.badge(isToday ? "blue" : isPast ? "gray" : "green")}>
+                        {isToday ? "今日" : isPast ? "已過" : "未來"}
+                      </span>
                     </div>
+                  );
+                })
+            ) : (
+              myShifts.length === 0
+                ? <div style={{ fontSize:13, color:C.hint, padding:"1.5rem 0", textAlign:"center" }}>本週暫無班次</div>
+                : myShifts.map((s,i) => (
+                  <div key={i} style={S.row(i===myShifts.length-1)}>
+                    <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                      <div style={{ width:8, height:8, borderRadius:"50%", background:s.room.color, flexShrink:0 }}/>
+                      <div>
+                        <div style={{ fontSize:13, fontWeight:500 }}>{s.room.name}</div>
+                        <div style={{ fontSize:11, color:C.muted }}>{s.time}{s.client ? ` · ${s.client}` : ""}</div>
+                      </div>
+                    </div>
+                    <span style={S.badge("green")}>已排班</span>
                   </div>
-                  <span style={S.badge("green")}>已排班</span>
-                </div>
-              ))
-            }
+                ))
+            )}
           </div>
         )}
 
         {tab==="salary" && (
+          liveMode ? (
+            <div style={S.card}>
+              <div style={{ textAlign:"center", padding:"1.5rem 0" }}>
+                <div style={{ fontSize:32, marginBottom:8 }}>📊</div>
+                <div style={{ fontSize:14, fontWeight:500, marginBottom:6 }}>本月薪資</div>
+                <div style={{ fontSize:12, color:C.muted, lineHeight:1.7 }}>
+                  5 月仍用舊系統打卡資料算薪資。<br/>
+                  6 月起本系統正式上線，可即時看本月薪資。
+                </div>
+                <div style={{ marginTop:14, padding:10, background:C.tabBg, borderRadius:8, fontSize:11, color:C.muted }}>
+                  你的本月排班：{myMonthShifts.length} 場
+                </div>
+              </div>
+            </div>
+          ) : (
           <div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:"1rem" }}>
               <div style={S.metric}>
@@ -607,6 +717,7 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout }
               </div>
             </div>
           </div>
+          )
         )}
 
         {tab==="notif" && (
@@ -1395,6 +1506,7 @@ export default function App() {
         staffData={staffData}
         onPunch={handlePunch}
         onLogout={handleLogout}
+        liveMode={liveMode}
       />
     );
   }
