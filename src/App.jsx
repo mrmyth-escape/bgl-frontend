@@ -320,7 +320,9 @@ function StaffEditModal({ staff, isNew, onSave, onClose, liveMode }) {
   const [lineUserId, setLineUserId] = useState(staff?.lineUserId || "");
   const initThemes = useMemo(() => {
     if (!staff?.themes) return [];
-    return STAFF_THEMES.filter(t => staff.themes.indexOf(t) >= 0);
+    // 精確 split，避免「詭獄」誤匹配「詭獄加場」
+    const list = String(staff.themes).split(/[、,，]/).map(s => s.trim()).filter(Boolean);
+    return STAFF_THEMES.filter(t => list.includes(t));
   }, [staff]);
   const [themes,     setThemes]     = useState(initThemes);
 
@@ -1262,14 +1264,32 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     }
   }
 
-  // 立即同步今日預約
+  // 立即同步今日預約：liveMode 直接呼叫 GAS 的 _v3SyncSimplyBookBookings
   async function syncTodayBookings() {
     setSyncStatus("loading");
+    if (liveMode) {
+      try {
+        await callGAS("_v3RunSyncNow");
+        // 立刻重抓 overview
+        try {
+          const data = await callGAS("getAdminOverview");
+          setAdminOverview(data);
+        } catch (_) {}
+        showToast("已觸發 GAS 同步，預約已更新");
+        setSyncStatus("ok");
+        setTimeout(() => setSyncStatus(null), 2000);
+      } catch (e) {
+        setSyncStatus("error");
+        showToast("同步失敗：" + e.message);
+        setTimeout(() => setSyncStatus(null), 3000);
+      }
+      return;
+    }
+    // demo 模式：原本走 bgl-backend-new 的 fallback
     try {
       const r = await fetch(`${SB_CONFIG.backendUrl}/api/bookings`, { signal: AbortSignal.timeout(10000) });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
-      // 將後端回傳的預約寫入 schedule
       const bookings = Array.isArray(data) ? data : (data.bookings || []);
       if (bookings.length > 0) {
         setSchedule(prev => {
