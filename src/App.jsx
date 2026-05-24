@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
+import * as XLSX from "xlsx";
 
 // ── SimplyBook 串接設定 ──────────────────────────────────
 const SB_CONFIG = {
@@ -1176,6 +1177,147 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [salaryLoading,  setSalaryLoading] = useState(false);
   const [bizReport,      setBizReport]     = useState(null);
   const [systemStatus,   setSystemStatus]  = useState(null);
+  const [exportingMonth, setExportingMonth] = useState(null);
+
+  // 匯出月度完整報表 (.xlsx, 5 個 sheet)
+  const exportMonthReport = useCallback(async (month) => {
+    if (!liveMode) return;
+    setExportingMonth(month);
+    try {
+      const [sal, biz, md] = await Promise.all([
+        callGAS('calculateMonthlySalary', { month }),
+        callGAS('getMonthBusinessReport',  { month }).catch(() => null),
+        callGAS('getMonthData',            { month }),
+      ]);
+
+      const wb = XLSX.utils.book_new();
+
+      // === Sheet 1: 經營概況 ===
+      const s1 = [
+        ['密室經營報表', month, '', '', '產出時間', new Date().toLocaleString('zh-TW')],
+        [],
+        ['📊 經營指標', '金額（NT$）'],
+      ];
+      if (biz) {
+        s1.push(['月毛收入',    biz.revenue]);
+        s1.push(['月人事成本',  biz.labor]);
+        s1.push(['月毛利',      biz.grossProfit]);
+        s1.push(['人事佔比',    (biz.laborRatio * 100).toFixed(1) + '%']);
+        s1.push([]);
+        s1.push(['主題營收',    '金額']);
+        if (biz.revenueByTheme) {
+          Object.entries(biz.revenueByTheme).forEach(([t, v]) => s1.push([t, v]));
+        }
+        s1.push([]);
+        s1.push(['資料來源',    biz.revenueSource || '']);
+        s1.push(['營收天數',    biz.daysWithRevenue]);
+      } else {
+        s1.push(['（無營收資料）']);
+      }
+      s1.push([]);
+      s1.push(['在職員工數', sal.perEmployee.length]);
+      s1.push(['月薪資合計', sal.monthTotal]);
+      const ws1 = XLSX.utils.aoa_to_sheet(s1);
+      ws1['!cols'] = [{ wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 22 }];
+      XLSX.utils.book_append_sheet(wb, ws1, '經營概況');
+
+      // === Sheet 2: 月薪總表 ===
+      const s2 = [
+        ['員工ID', '姓名', '排班場次', '已對應', '遲到', '缺勤', '時數', '總薪'],
+      ];
+      sal.perEmployee.forEach(e => {
+        s2.push([e.empId, e.name, e.totalShifts, e.totalCovered, e.totalLate, e.totalMissed, e.totalHours, e.totalPay]);
+      });
+      s2.push(['', '合計', '', '', '', '', '', sal.monthTotal]);
+      const ws2 = XLSX.utils.aoa_to_sheet(s2);
+      ws2['!cols'] = [{ wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 10 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws2, '月薪總表');
+
+      // === Sheet 3: 薪資每日明細 ===
+      const s3 = [
+        ['員工ID', '姓名', '日期', '類別', '場次', '時數', '小計', '備註'],
+      ];
+      const empNameMap = {};
+      sal.perEmployee.forEach(e => { empNameMap[e.empId] = e.name; });
+      sal.perDay.forEach(d => {
+        const name = empNameMap[d.empId] || '';
+        Object.entries(d.byCat || {}).forEach(([cat, c]) => {
+          if (c.sessions > 0 || c.pay > 0 || c.missed > 0) {
+            s3.push([
+              d.empId, name, d.date, cat,
+              c.sessions || (c.covered + c.missed),
+              c.hours || '', c.pay || 0,
+              c.missed > 0 ? `${c.missed} 場未打卡` : ''
+            ]);
+          }
+        });
+        if (d.flags && d.flags.length > 0) {
+          s3.push([d.empId, name, d.date, '⚠ 異常', '', '', '', d.flags.join('；')]);
+        }
+      });
+      const ws3 = XLSX.utils.aoa_to_sheet(s3);
+      ws3['!cols'] = [{ wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 8 }, { wch: 8 }, { wch: 10 }, { wch: 30 }];
+      XLSX.utils.book_append_sheet(wb, ws3, '每日明細');
+
+      // === Sheet 4: 排班表 ===
+      const s4 = [
+        ['日期', '開場時間', '主題', '角色', '員工ID', '員工姓名', '場費', '通知狀態'],
+      ];
+      (md.schedule || []).forEach(s => {
+        s4.push([
+          String(s['日期'] || '').substring(0, 10),
+          String(s['開場時間'] || '').substring(0, 5),
+          s['主題'] || '', s['角色'] || '',
+          s['員工ID'] || '', s['員工姓名'] || '',
+          s['場費'] || 0, s['通知狀態'] || '',
+        ]);
+      });
+      const ws4 = XLSX.utils.aoa_to_sheet(s4);
+      ws4['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws4, '排班表');
+
+      // === Sheet 5: 預約清單 ===
+      const s5 = [
+        ['預約ID', '日期', '開場時間', '主題', '預約人數', '客戶聯絡', '來源', '備註'],
+      ];
+      (md.bookings || []).forEach(b => {
+        s5.push([
+          b['預約ID'] || '',
+          String(b['日期'] || '').substring(0, 10),
+          String(b['開場時間'] || '').substring(0, 5),
+          b['主題'] || '', b['預約人數'] || 0,
+          b['客戶聯絡'] || '', b['來源'] || '', b['備註'] || '',
+        ]);
+      });
+      const ws5 = XLSX.utils.aoa_to_sheet(s5);
+      ws5['!cols'] = [{ wch: 22 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 8 }, { wch: 28 }, { wch: 12 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, ws5, '預約清單');
+
+      // === Sheet 6: 每日營收（如果有）===
+      if (biz && biz.revenueAvailable) {
+        const revData = await callGAS('getMonthRevenue', { month });
+        const s6 = [
+          ['日期', '星期', '平/假日', '毛收入', '密室加總', '折價加總', '紀念品加總', '詭獄', '詭店', '外婆'],
+        ];
+        (revData.daily || []).forEach(d => {
+          s6.push([
+            d.date, d.weekday, d.dayType,
+            d.gross, d.indoor, d.discount, d.souvenir,
+            d.byTheme['詭獄'] || 0, d.byTheme['詭店'] || 0, d.byTheme['外婆'] || 0,
+          ]);
+        });
+        const ws6 = XLSX.utils.aoa_to_sheet(s6);
+        ws6['!cols'] = Array(10).fill({ wch: 12 });
+        XLSX.utils.book_append_sheet(wb, ws6, '每日營收');
+      }
+
+      XLSX.writeFile(wb, `密室經營報表_${month}.xlsx`);
+    } catch (e) {
+      alert('匯出失敗：' + e.message);
+    } finally {
+      setExportingMonth(null);
+    }
+  }, [liveMode]);
 
   // 系統狀態：切到設定 tab 時抓
   const reloadSystemStatus = useCallback(async () => {
@@ -1753,16 +1895,60 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
         {/* ── 薪資 ── */}
         {tab==="salary" && (liveMode ? (
           <div>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.75rem", gap:8, flexWrap:"wrap" }}>
               <div style={{ fontSize:14, fontWeight:600 }}>
                 {monthSalary?.month || (new Date().getFullYear() + '-' + String(new Date().getMonth()+1).padStart(2,'0'))} 薪資
               </div>
-              <button onClick={reloadMonthSalary} disabled={salaryLoading}
-                style={{ fontSize:11, padding:"4px 10px", border:`1px solid ${C.border}`,
-                  borderRadius:6, background:"transparent", color:C.muted,
-                  cursor: salaryLoading ? "wait" : "pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>
-                {salaryLoading ? "計算中..." : "↻ 重算"}
-              </button>
+              <div style={{ display:"flex", gap:6 }}>
+                <button onClick={reloadMonthSalary} disabled={salaryLoading}
+                  style={{ fontSize:11, padding:"5px 10px", border:`1px solid ${C.border}`,
+                    borderRadius:6, background:"transparent", color:C.muted,
+                    cursor: salaryLoading ? "wait" : "pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>
+                  {salaryLoading ? "計算中..." : "↻ 重算"}
+                </button>
+                <button
+                  onClick={() => exportMonthReport(monthSalary?.month || (new Date().getFullYear() + '-' + String(new Date().getMonth()+1).padStart(2,'0')))}
+                  disabled={!!exportingMonth || !monthSalary}
+                  style={{ fontSize:11, padding:"5px 12px", border:"none",
+                    borderRadius:6, background: exportingMonth ? "#94a8d6" : "#2A5CC0", color:"#FFF",
+                    cursor: exportingMonth ? "wait" : "pointer", fontFamily:"'Noto Sans TC', sans-serif",
+                    fontWeight:500 }}>
+                  {exportingMonth ? "匯出中..." : "📥 匯出 Excel"}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display:"flex", gap:6, marginBottom:"0.75rem", overflowX:"auto", paddingBottom:4 }}>
+              {(() => {
+                const cur = new Date();
+                const months = [];
+                for (let i = 0; i < 6; i++) {
+                  const d = new Date(cur.getFullYear(), cur.getMonth() - i, 1);
+                  months.push(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'));
+                }
+                return months.map(m => (
+                  <button key={m} onClick={async () => {
+                    setSalaryLoading(true);
+                    try {
+                      const [sal, biz] = await Promise.all([
+                        callGAS('calculateMonthlySalary', { month: m }),
+                        callGAS('getMonthBusinessReport', { month: m }).catch(() => null),
+                      ]);
+                      setMonthSalary(sal);
+                      setBizReport(biz);
+                    } finally { setSalaryLoading(false); }
+                  }} style={{
+                    flexShrink:0, padding:"5px 10px", borderRadius:8, fontSize:11,
+                    border: `1px solid ${monthSalary?.month === m ? "#2A5CC0" : C.border}`,
+                    background: monthSalary?.month === m ? "#EEF4FF" : "transparent",
+                    color: monthSalary?.month === m ? "#2A5CC0" : C.muted,
+                    cursor: "pointer", fontFamily:"'Noto Sans TC', sans-serif",
+                    fontWeight: monthSalary?.month === m ? 500 : 400,
+                  }}>
+                    {m}
+                  </button>
+                ));
+              })()}
             </div>
 
             {!monthSalary && !salaryLoading && (
