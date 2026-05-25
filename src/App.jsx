@@ -448,6 +448,96 @@ function StaffEditModal({ staff, isNew, onSave, onClose, liveMode }) {
   );
 }
 
+// ── 員工新申請 Modal ──────────────────────────────────────
+function StaffRequestModal({ type, staffData, myId, onClose, onSubmit }) {
+  const today = new Date().toISOString().substring(0, 10);
+  const [date, setDate] = useState(today);
+  const [time, setTime] = useState("10:00");
+  const [note, setNote] = useState("");
+  const [punchType, setPunchType] = useState("in");
+  const [swapTarget, setSwapTarget] = useState("");
+  const [leaveKind, setLeaveKind] = useState("事假");
+
+  const titleMap = { leave: "🌴 申請請假", swap: "🔄 申請換班", punch_fix: "⏰ 申請補打卡" };
+  const canSubmit = date && (type !== 'swap' || swapTarget);
+
+  const handleSubmit = () => {
+    const details = {};
+    if (type === 'punch_fix') details.punchType = punchType;
+    if (type === 'swap') details.swapWithEmpId = swapTarget;
+    if (type === 'leave') details.leaveKind = leaveKind;
+    onSubmit({ type, date, time: (type === 'punch_fix' ? time : ''), details, note });
+  };
+
+  return (
+    <div style={S.modalOverlay} onClick={onClose}>
+      <div style={S.modalSheet} onClick={e => e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+          <div style={{ fontSize:15, fontWeight:500 }}>{titleMap[type]}</div>
+          <button onClick={onClose} style={{ border:"none", background:C.tabBg, color:C.muted,
+            fontSize:16, cursor:"pointer", width:30, height:30, borderRadius:"50%", lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={S.label}>{type === 'leave' ? '請假日期' : type === 'swap' ? '想換掉的班 日期' : '補打卡日期'}</div>
+        <input style={S.inp} type="date" value={date} onChange={e => setDate(e.target.value)} />
+
+        {type === 'leave' && (
+          <>
+            <div style={S.label}>請假類別</div>
+            <select style={{ ...S.inp, cursor:"pointer" }} value={leaveKind} onChange={e => setLeaveKind(e.target.value)}>
+              {['事假','病假','特休','排休','其他'].map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </>
+        )}
+
+        {type === 'swap' && (
+          <>
+            <div style={S.label}>想跟誰換</div>
+            <select style={{ ...S.inp, cursor:"pointer" }} value={swapTarget} onChange={e => setSwapTarget(e.target.value)}>
+              <option value="">-- 選擇對方員工 --</option>
+              {staffData.filter(s => s.id !== myId).map(s => (
+                <option key={s.id} value={s.id}>{s.name} ({s.id})</option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {type === 'punch_fix' && (
+          <>
+            <div style={S.label}>補打卡時間</div>
+            <input style={S.inp} type="time" value={time} onChange={e => setTime(e.target.value)} />
+            <div style={S.label}>類別</div>
+            <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+              {[['in','上班'],['out','下班']].map(([v,l]) => (
+                <button key={v} onClick={() => setPunchType(v)} style={{
+                  flex:1, padding:10, border:`1px solid ${punchType===v?'#2A5CC0':C.border}`,
+                  borderRadius:8, background: punchType===v?'#EEF4FF':'transparent',
+                  color: punchType===v?'#2A5CC0':C.muted, cursor:"pointer", fontWeight: punchType===v?500:400,
+                  fontFamily:"'Noto Sans TC', sans-serif", fontSize:13 }}>
+                  {l}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div style={S.label}>備註（原因 / 補充）</div>
+        <textarea style={{ ...S.inp, height:80, resize:"vertical", fontFamily:"'Noto Sans TC', sans-serif" }}
+          value={note} onChange={e => setNote(e.target.value)}
+          placeholder={type === 'leave' ? '例：家中有事' : type === 'swap' ? '例：當天有事，已徵得對方同意' : '例：當日忙忘了打卡'}/>
+
+        <button onClick={handleSubmit} disabled={!canSubmit}
+          style={{ width:"100%", padding:13, border:"none", borderRadius:10, fontSize:14,
+            fontWeight:500, cursor: canSubmit ? "pointer" : "not-allowed",
+            background: canSubmit ? "#2A5CC0" : "#D0CEC8", color:"#FFF",
+            fontFamily:"'Noto Sans TC', sans-serif", opacity: canSubmit ? 1 : 0.6, marginTop:8 }}>
+          送出申請
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── 刪除確認 Dialog ───────────────────────────────────────
 function ConfirmDialog({ message, onConfirm, onCancel }) {
   return (
@@ -567,6 +657,8 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   const [todayStatus, setTodayStatus] = useState(null);  // 從 getTodayStatus 來
   const [gasSched,    setGasSched]    = useState([]);    // 指定月份排班（給「我的班表」行事曆用）
   const [loading,     setLoading]     = useState(false);
+  const [myReqs,      setMyReqs]      = useState([]);
+  const [newReq,      setNewReq]      = useState(null);    // 新申請 modal: null | { type }
   const todayObj = useMemo(() => new Date(), []);
   const [viewMonth,    setViewMonth]    = useState(() => {
     const t = new Date();
@@ -625,6 +717,35 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
     const id = setInterval(reloadGAS, 60000);
     return () => clearInterval(id);
   }, [liveMode, reloadGAS]);
+
+  // 我的申請列表
+  const reloadMyReqs = useCallback(async () => {
+    if (!liveMode || !account.staffId) return;
+    try {
+      const data = await callGAS("getMyRequests", { empId: String(account.staffId) });
+      setMyReqs(data?.requests || []);
+    } catch (e) {}
+  }, [liveMode, account.staffId]);
+  useEffect(() => { if (tab === "request") reloadMyReqs(); }, [tab, reloadMyReqs]);
+
+  // 提交申請
+  const submitRequest = useCallback(async (req) => {
+    try {
+      await callGAS("submitStaffRequest", {
+        empId: String(account.staffId),
+        type: req.type,
+        date: req.date,
+        time: req.time || "",
+        details: req.details || {},
+        note: req.note || "",
+      });
+      setNewReq(null);
+      showToast("已送出申請，等待 admin 審核");
+      reloadMyReqs();
+    } catch (e) {
+      showToast("送出失敗：" + e.message);
+    }
+  }, [account.staffId, reloadMyReqs]);
 
   // 統一 myLogs：liveMode 用 todayStatus.punches，demo 用本地 punchLogs
   const myLogs = useMemo(() => {
@@ -738,8 +859,8 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
   const TABS = [
     { id:"punch",    label:"打卡" },
     { id:"schedule", label:"我的班表" },
+    { id:"request",  label:"申請" },
     { id:"salary",   label:"薪資" },
-    { id:"notif",    label:"通知" },
   ];
 
   return (
@@ -1039,6 +1160,91 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
           </div>
         )}
 
+        {/* 新申請 modal */}
+        {newReq && (
+          <StaffRequestModal
+            type={newReq.type}
+            staffData={staffData}
+            myId={account.staffId}
+            onClose={() => setNewReq(null)}
+            onSubmit={submitRequest}
+          />
+        )}
+
+        {tab==="request" && liveMode && (
+          <div>
+            <div style={S.card}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                <div style={S.label}>新申請</div>
+                <button onClick={reloadMyReqs} style={{ fontSize:11, padding:"3px 8px",
+                  border:`1px solid ${C.border}`, borderRadius:6, background:"transparent",
+                  color:C.muted, cursor:"pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>↻</button>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+                {[
+                  { type:"leave",      icon:"🌴", label:"請假" },
+                  { type:"swap",       icon:"🔄", label:"換班" },
+                  { type:"punch_fix",  icon:"⏰", label:"補打卡" },
+                ].map(t => (
+                  <button key={t.type} onClick={() => setNewReq({ type: t.type })}
+                    style={{ padding:"14px 6px", border:`1px solid ${C.border}`, borderRadius:10,
+                      background:"#fff", cursor:"pointer", fontFamily:"'Noto Sans TC', sans-serif",
+                      display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                    <span style={{ fontSize:22 }}>{t.icon}</span>
+                    <span style={{ fontSize:13, fontWeight:500, color:C.text }}>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={S.card}>
+              <div style={S.label}>我的申請紀錄（{myReqs.length}）</div>
+              {myReqs.length === 0 ? (
+                <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>還沒申請過</div>
+              ) : myReqs.map((r, i, arr) => {
+                const statusColor = r.status === '已批准' ? C.success.text
+                  : r.status === '已拒絕' ? C.danger.text
+                  : C.warning.text;
+                const statusBg = r.status === '已批准' ? C.success.bg
+                  : r.status === '已拒絕' ? C.danger.bg
+                  : C.warning.bg;
+                return (
+                  <div key={r.requestId} style={{ padding:"10px 4px",
+                    borderBottom: i===arr.length-1 ? 'none' : `1px solid ${C.border}` }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline" }}>
+                      <div style={{ fontSize:13, fontWeight:500 }}>
+                        {r.type} · {r.date}{r.time ? ` ${r.time}` : ''}
+                      </div>
+                      <span style={{ fontSize:11, padding:"2px 8px", borderRadius:99,
+                        background: statusBg, color: statusColor, fontWeight:500 }}>
+                        {r.status}
+                      </span>
+                    </div>
+                    {r.note && (
+                      <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>備註：{r.note}</div>
+                    )}
+                    {r.reviewNote && (
+                      <div style={{ fontSize:11, color: statusColor, marginTop:3 }}>
+                        審核：{r.reviewNote}
+                      </div>
+                    )}
+                    <div style={{ fontSize:10, color:C.hint, marginTop:3 }}>
+                      申請 {r.submittedAt}{r.reviewedAt ? ` · 審核 ${r.reviewedAt}` : ''}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {tab==="request" && !liveMode && (
+          <div style={S.card}>
+            <div style={{ fontSize:13, color:C.hint, padding:"1rem 0", textAlign:"center" }}>
+              demo 模式不支援申請功能
+            </div>
+          </div>
+        )}
+
         {tab==="salary" && (
           liveMode ? (
             <div style={S.card}>
@@ -1178,6 +1384,8 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [bizReport,      setBizReport]     = useState(null);
   const [systemStatus,   setSystemStatus]  = useState(null);
   const [exportingMonth, setExportingMonth] = useState(null);
+  const [pendingReqs,    setPendingReqs]   = useState([]);
+  const [reviewBusy,     setReviewBusy]    = useState(null); // requestId 處理中
 
   // 匯出月度完整報表 (.xlsx, 5 個 sheet)
   const exportMonthReport = useCallback(async (month) => {
@@ -1332,7 +1540,15 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     if (liveMode && tab === 'settings') reloadSystemStatus();
   }, [liveMode, tab, reloadSystemStatus]);
 
-  // 從 GAS 抓真實 admin overview，每分鐘 reload
+  // 從 GAS 抓真實 admin overview + pending requests，每分鐘 reload
+  const reloadPendingReqs = useCallback(async () => {
+    if (!liveMode) return;
+    try {
+      const data = await callGAS('getPendingRequests');
+      setPendingReqs(data?.requests || []);
+    } catch (e) {}
+  }, [liveMode]);
+
   useEffect(() => {
     if (!liveMode) return;
     let cancel = false;
@@ -1341,11 +1557,26 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
         const data = await callGAS('getAdminOverview');
         if (!cancel) setAdminOverview(data);
       } catch (e) { console.warn('getAdminOverview 失敗:', e.message); }
+      reloadPendingReqs();
     };
     load();
     const id = setInterval(load, 60000);
     return () => { cancel = true; clearInterval(id); };
-  }, [liveMode]);
+  }, [liveMode, reloadPendingReqs]);
+
+  // 審核申請
+  const handleReview = useCallback(async (requestId, action, note) => {
+    setReviewBusy(requestId);
+    try {
+      const res = await callGAS('reviewRequest', { requestId, action, reviewer: 'admin', reviewNote: note || '' });
+      showToast(`已${action === 'approve' ? '批准' : '拒絕'}${res?.actionTaken ? '（' + res.actionTaken + '）' : ''}`);
+      await reloadPendingReqs();
+    } catch (e) {
+      showToast('審核失敗：' + e.message);
+    } finally {
+      setReviewBusy(null);
+    }
+  }, [reloadPendingReqs]);
 
   // 載入本月薪資 + 商業報表（lazy：第一次切到薪資 tab 時抓）
   const reloadMonthSalary = useCallback(async () => {
@@ -1673,6 +1904,119 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
             {/* liveMode：直接顯示 GAS 真實員工狀態 */}
             {liveMode && adminOverview ? (
               <>
+                {/* 📥 待審申請（最重要，放最上面） */}
+                {pendingReqs.length > 0 && (
+                  <div style={{ ...S.card, border:`2px solid ${C.warning.text}66`, background:'#FFFAEC' }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:8 }}>
+                      <div style={{ fontSize:14, fontWeight:600, color:C.warning.text }}>
+                        📥 待審申請（{pendingReqs.length}）
+                      </div>
+                    </div>
+                    {pendingReqs.map((r, i, arr) => (
+                      <div key={r.requestId} style={{ padding:"10px 4px",
+                        borderBottom: i===arr.length-1 ? 'none' : `1px solid ${C.border}` }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:3 }}>
+                          <div style={{ fontSize:13, fontWeight:500 }}>
+                            {r.name} <span style={{ fontSize:10, color:C.muted }}>{r.empId}</span>
+                            {' · '}{r.type}
+                          </div>
+                          <span style={{ fontSize:10, color:C.muted }}>{r.submittedAt.substring(5,16)}</span>
+                        </div>
+                        <div style={{ fontSize:12, color:C.text, marginTop:2 }}>
+                          {r.date}{r.time ? ` ${r.time}` : ''}
+                          {r.details?.punchType && <span style={{ marginLeft:6 }}>({r.details.punchType === 'in' ? '上班' : '下班'})</span>}
+                          {r.details?.leaveKind && <span style={{ marginLeft:6 }}>({r.details.leaveKind})</span>}
+                          {r.details?.swapWithEmpId && <span style={{ marginLeft:6 }}>(換給 {r.details.swapWithEmpId})</span>}
+                        </div>
+                        {r.note && (
+                          <div style={{ fontSize:11, color:C.muted, marginTop:3 }}>備註：{r.note}</div>
+                        )}
+                        <div style={{ display:"flex", gap:6, marginTop:8 }}>
+                          <button onClick={() => handleReview(r.requestId, 'approve', '')}
+                            disabled={reviewBusy === r.requestId}
+                            style={{ flex:1, padding:"7px 0", fontSize:12, fontWeight:500,
+                              border:"none", borderRadius:8, background:C.success.text, color:"#FFF",
+                              cursor: reviewBusy === r.requestId ? "wait" : "pointer",
+                              fontFamily:"'Noto Sans TC', sans-serif" }}>
+                            ✓ 批准
+                          </button>
+                          <button onClick={() => {
+                            const reason = window.prompt('拒絕原因（可留空）') ?? null;
+                            if (reason !== null) handleReview(r.requestId, 'reject', reason);
+                          }} disabled={reviewBusy === r.requestId}
+                            style={{ flex:1, padding:"7px 0", fontSize:12, fontWeight:500,
+                              border:`1px solid ${C.danger.text}66`, borderRadius:8,
+                              background:"transparent", color:C.danger.text,
+                              cursor: reviewBusy === r.requestId ? "wait" : "pointer",
+                              fontFamily:"'Noto Sans TC', sans-serif" }}>
+                            ✗ 拒絕
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* 📊 本月場次概況 + 員工排行 */}
+                {adminOverview.monthlyStats && (
+                  <div style={S.card}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:10 }}>
+                      <div style={S.label}>📊 本月場次概況 ({adminOverview.monthlyStats.month})</div>
+                      <div style={{ fontSize:10, color:C.hint }}>{adminOverview.monthlyStats.empCount} 位員工有班</div>
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
+                      <div style={{ background:"#EEF4FF", borderRadius:8, padding:"10px 12px" }}>
+                        <div style={{ fontSize:11, color:"#2A5CC0" }}>月總預約場次</div>
+                        <div style={{ fontSize:22, fontWeight:700, color:"#2A5CC0" }}>
+                          {adminOverview.monthlyStats.totalBookings}
+                          <span style={{ fontSize:12, fontWeight:400, marginLeft:4 }}>場</span>
+                        </div>
+                      </div>
+                      <div style={{ background:"#EDFBF4", borderRadius:8, padding:"10px 12px" }}>
+                        <div style={{ fontSize:11, color:"#1A7A4A" }}>月總已排班</div>
+                        <div style={{ fontSize:22, fontWeight:700, color:"#1A7A4A" }}>
+                          {adminOverview.monthlyStats.totalScheduled}
+                          <span style={{ fontSize:12, fontWeight:400, marginLeft:4 }}>人次</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize:11, color:C.muted, marginBottom:6, fontWeight:500 }}>員工本月場次排行</div>
+                    {adminOverview.monthlyStats.empRanking.map((e,i,arr) => {
+                      const cap = e.isFulltime ? 60 : 50;
+                      const overrun = e.shifts > cap;
+                      const ratio = Math.min(1, e.shifts / cap);
+                      const medals = ['🥇','🥈','🥉'];
+                      return (
+                        <div key={e.empId} style={{ padding:"5px 0",
+                          borderBottom: i===arr.length-1 ? 'none' : `1px solid ${C.border}` }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:3 }}>
+                            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                              <span style={{ fontSize:11, color:C.muted, minWidth:20 }}>
+                                {i < 3 ? medals[i] : `#${i+1}`}
+                              </span>
+                              <span style={{ fontSize:12, fontWeight:500 }}>{e.name}</span>
+                              <span style={{ fontSize:10, color:C.muted }}>{e.role}</span>
+                            </div>
+                            <span style={{ fontSize:13, fontWeight:600, color: overrun ? C.danger.text : C.text }}>
+                              {e.shifts} 場
+                              {overrun && <span style={{ fontSize:10, marginLeft:4 }}>⚠</span>}
+                            </span>
+                          </div>
+                          {/* 進度條（相對軟上限） */}
+                          <div style={{ height:3, background:'#f0ede4', borderRadius:2, overflow:'hidden' }}>
+                            <div style={{ width: `${ratio*100}%`, height:'100%',
+                              background: overrun ? C.danger.text : ratio > 0.8 ? '#C07000' : '#5b8a3a' }}/>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div style={{ fontSize:10, color:C.hint, marginTop:8, textAlign:"center" }}>
+                      軟上限：正職 60 場 / 兼職 50 場
+                    </div>
+                  </div>
+                )}
+
                 <div style={S.card}>
                   <div style={S.label}>目前在場員工（{adminOverview.presentStaff.length}）</div>
                   {adminOverview.presentStaff.length === 0
