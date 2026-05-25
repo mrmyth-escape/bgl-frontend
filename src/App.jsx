@@ -1331,6 +1331,7 @@ function GasAdminEmbed({ onClose }) {
     ? (sessionStorage.getItem('bgl_admin_pwd') || 'admin1234')
     : 'admin1234';
 
+  // 三條 SSO 路徑（hash + postMessage onLoad + postMessage on ready event）
   useEffect(() => {
     const handler = (e) => {
       if (e.data && e.data.type === "bgl_adminReady" && iframeRef.current?.contentWindow) {
@@ -1341,7 +1342,10 @@ function GasAdminEmbed({ onClose }) {
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, []);
+  }, [ADMIN_PASS]);
+
+  // iframe src 帶 hash 第一道 SSO 保險
+  const iframeSrc = `${GAS_URL}?page=admin#adminPass=${encodeURIComponent(ADMIN_PASS)}`;
 
   return (
     <div style={{ position:"fixed", inset:0, zIndex:100, background:"#fff", display:"flex", flexDirection:"column" }}>
@@ -1357,7 +1361,7 @@ function GasAdminEmbed({ onClose }) {
       </div>
       <iframe
         ref={iframeRef}
-        src={`${GAS_URL}?page=admin`}
+        src={iframeSrc}
         style={{ flex:1, border:"none", width:"100%" }}
         title="GAS 排班後台"
         onLoad={() => {
