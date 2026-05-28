@@ -1391,21 +1391,27 @@ function GasAdminEmbed({ onClose }) {
     ? (sessionStorage.getItem('bgl_admin_pwd') || 'admin1234')
     : 'admin1234';
 
-  // 三條 SSO 路徑（hash + postMessage onLoad + postMessage on ready event）
+  // SSO：sandbox iframe 主動 postMessage 過來時，用 e.source 直接回（不靠層級關係）
   useEffect(() => {
     const handler = (e) => {
-      if (e.data && e.data.type === "bgl_adminReady" && iframeRef.current?.contentWindow) {
-        try {
+      try {
+        if (!e.data) return;
+        // sandbox 主動索取
+        if (e.data.type === "bgl_adminReady_v2" && e.source) {
+          e.source.postMessage({ type: "bgl_autoAdminLogin", pwd: ADMIN_PASS }, "*");
+        }
+        // 舊版相容
+        if (e.data.type === "bgl_adminReady" && iframeRef.current?.contentWindow) {
           iframeRef.current.contentWindow.postMessage({ type: "bgl_autoAdminLogin", pwd: ADMIN_PASS }, "*");
-        } catch (err) {}
-      }
+        }
+      } catch (err) {}
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, [ADMIN_PASS]);
 
-  // v3.46：query string 給 GAS doGet server-side 驗證 + inject PRE_AUTH
-  const iframeSrc = `${GAS_URL}?page=admin&adminPass=${encodeURIComponent(ADMIN_PASS)}`;
+  // 不再帶 query string adminPass（GAS sandbox 收不到）；單純走 postMessage
+  const iframeSrc = `${GAS_URL}?page=admin`;
 
   return (
     <div style={{ position:"fixed", inset:0, zIndex:100, background:"#fff", display:"flex", flexDirection:"column" }}>
