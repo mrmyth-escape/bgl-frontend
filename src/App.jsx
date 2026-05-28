@@ -1452,6 +1452,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   const [monthSalary,    setMonthSalary]   = useState(null);
   const [salaryLoading,  setSalaryLoading] = useState(false);
   const [bizReport,      setBizReport]     = useState(null);
+  const [estimateMode,   setEstimateMode]  = useState(false);  // 試算模式（忽略打卡）
   const [systemStatus,   setSystemStatus]  = useState(null);
   const [exportingMonth, setExportingMonth] = useState(null);
   const [pendingReqs,    setPendingReqs]   = useState([]);
@@ -1651,23 +1652,25 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     }
   }, [reloadPendingReqs]);
 
-  // v3.49 載入本月薪資 + 商業報表（只 call 一次 GAS，省半個 round-trip）
-  const reloadMonthSalary = useCallback(async (targetMonth) => {
+  // v3.50 載入本月薪資 + 商業報表（試算模式 toggle）
+  const reloadMonthSalary = useCallback(async (targetMonth, est) => {
     if (!liveMode) return;
     const now = new Date();
     const month = targetMonth || (now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0'));
+    const assumeAllPunched = (est === undefined) ? estimateMode : est;
+    const payload = { month, assumeAllPunched };
 
     // 立刻顯示 cache（若有）
-    const cb = readGasCache('getMonthBusinessReport', { month });
+    const cb = readGasCache('getMonthBusinessReport', payload);
     if (cb) {
       setBizReport(cb.data);
       if (cb.data?.monthSalary) setMonthSalary(cb.data.monthSalary);
-      if (cb.fresh) return; // 新鮮就不打 API
+      if (cb.fresh) return;
     }
 
-    if (!cb) setSalaryLoading(true);  // 沒 cache 才顯示 loading
+    if (!cb) setSalaryLoading(true);
     try {
-      const biz = await callGAS('getMonthBusinessReport', { month });
+      const biz = await callGAS('getMonthBusinessReport', payload);
       setBizReport(biz);
       if (biz?.monthSalary) setMonthSalary(biz.monthSalary);
     } catch (e) {
@@ -1675,12 +1678,16 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     } finally {
       setSalaryLoading(false);
     }
-  }, [liveMode]);
+  }, [liveMode, estimateMode]);
 
-  // v3.49 admin 登入後背景 prefetch 本月薪資（不阻塞 UI）
+  // 切換試算模式時自動 reload
+  useEffect(() => {
+    if (liveMode && (monthSalary || bizReport)) reloadMonthSalary(monthSalary?.month, estimateMode);
+  }, [estimateMode]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // admin 登入後背景 prefetch 本月薪資
   useEffect(() => {
     if (!liveMode) return;
-    // 延後 800ms 讓 admin overview 先載入
     const t = setTimeout(() => { reloadMonthSalary(); }, 800);
     return () => clearTimeout(t);
   }, [liveMode, reloadMonthSalary]);
@@ -2330,8 +2337,17 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
               <div style={{ fontSize:14, fontWeight:600 }}>
                 {monthSalary?.month || (new Date().getFullYear() + '-' + String(new Date().getMonth()+1).padStart(2,'0'))} 薪資
               </div>
-              <div style={{ display:"flex", gap:6 }}>
-                <button onClick={reloadMonthSalary} disabled={salaryLoading}
+              <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                <label style={{ display:"flex", alignItems:"center", gap:5, fontSize:11,
+                  padding:"4px 10px", border:`1px solid ${estimateMode ? "#C07000" : C.border}`,
+                  borderRadius:6, background: estimateMode ? "#FEF8E7" : "transparent",
+                  color: estimateMode ? "#C07000" : C.muted, cursor:"pointer" }}>
+                  <input type="checkbox" checked={estimateMode}
+                    onChange={e => setEstimateMode(e.target.checked)}
+                    style={{ margin:0 }}/>
+                  試算模式
+                </label>
+                <button onClick={() => reloadMonthSalary()} disabled={salaryLoading}
                   style={{ fontSize:11, padding:"5px 10px", border:`1px solid ${C.border}`,
                     borderRadius:6, background:"transparent", color:C.muted,
                     cursor: salaryLoading ? "wait" : "pointer", fontFamily:"'Noto Sans TC', sans-serif" }}>
@@ -2445,10 +2461,12 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
                   </div>
                 )}
 
-                <div style={{ ...S.card, background:C.info.bg, marginBottom:"0.75rem" }}>
+                <div style={{ ...S.card, background: estimateMode ? "#FEF8E7" : C.info.bg, marginBottom:"0.75rem" }}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <span style={{ color:C.info.text, fontSize:13 }}>本月應付薪資合計</span>
-                    <span style={{ fontWeight:700, fontSize:20, color:C.info.text }}>
+                    <span style={{ color: estimateMode ? "#C07000" : C.info.text, fontSize:13 }}>
+                      {estimateMode ? "試算薪資（忽略打卡，假設全部有來）" : "本月應付薪資合計"}
+                    </span>
+                    <span style={{ fontWeight:700, fontSize:20, color: estimateMode ? "#C07000" : C.info.text }}>
                       ＄{(monthSalary.monthTotal || 0).toLocaleString()}
                     </span>
                   </div>
