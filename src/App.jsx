@@ -1651,32 +1651,39 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     }
   }, [reloadPendingReqs]);
 
-  // 載入本月薪資 + 商業報表（lazy：第一次切到薪資 tab 時抓，stale-while-revalidate）
-  const reloadMonthSalary = useCallback(async () => {
+  // v3.49 載入本月薪資 + 商業報表（只 call 一次 GAS，省半個 round-trip）
+  const reloadMonthSalary = useCallback(async (targetMonth) => {
     if (!liveMode) return;
     const now = new Date();
-    const month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
-    // 立刻顯示 cache（若有）
-    const cs = readGasCache('calculateMonthlySalary', { month });
-    const cb = readGasCache('getMonthBusinessReport', { month });
-    if (cs) setMonthSalary(cs.data);
-    if (cb) setBizReport(cb.data);
-    if (cs && cb && cs.fresh && cb.fresh) return; // 都新鮮就不打 API
+    const month = targetMonth || (now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0'));
 
-    setSalaryLoading(true);
+    // 立刻顯示 cache（若有）
+    const cb = readGasCache('getMonthBusinessReport', { month });
+    if (cb) {
+      setBizReport(cb.data);
+      if (cb.data?.monthSalary) setMonthSalary(cb.data.monthSalary);
+      if (cb.fresh) return; // 新鮮就不打 API
+    }
+
+    if (!cb) setSalaryLoading(true);  // 沒 cache 才顯示 loading
     try {
-      const [sal, biz] = await Promise.all([
-        callGAS('calculateMonthlySalary', { month }),
-        callGAS('getMonthBusinessReport', { month }).catch(() => null),
-      ]);
-      setMonthSalary(sal);
+      const biz = await callGAS('getMonthBusinessReport', { month });
       setBizReport(biz);
+      if (biz?.monthSalary) setMonthSalary(biz.monthSalary);
     } catch (e) {
       console.warn('reloadMonthSalary 失敗:', e.message);
     } finally {
       setSalaryLoading(false);
     }
   }, [liveMode]);
+
+  // v3.49 admin 登入後背景 prefetch 本月薪資（不阻塞 UI）
+  useEffect(() => {
+    if (!liveMode) return;
+    // 延後 800ms 讓 admin overview 先載入
+    const t = setTimeout(() => { reloadMonthSalary(); }, 800);
+    return () => clearTimeout(t);
+  }, [liveMode, reloadMonthSalary]);
 
   useEffect(() => {
     if (liveMode && tab === 'salary' && !monthSalary) reloadMonthSalary();
@@ -2351,17 +2358,7 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
                   months.push(d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0'));
                 }
                 return months.map(m => (
-                  <button key={m} onClick={async () => {
-                    setSalaryLoading(true);
-                    try {
-                      const [sal, biz] = await Promise.all([
-                        callGAS('calculateMonthlySalary', { month: m }),
-                        callGAS('getMonthBusinessReport', { month: m }).catch(() => null),
-                      ]);
-                      setMonthSalary(sal);
-                      setBizReport(biz);
-                    } finally { setSalaryLoading(false); }
-                  }} style={{
+                  <button key={m} onClick={() => reloadMonthSalary(m)} style={{
                     flexShrink:0, padding:"5px 10px", borderRadius:8, fontSize:11,
                     border: `1px solid ${monthSalary?.month === m ? "#2A5CC0" : C.border}`,
                     background: monthSalary?.month === m ? "#EEF4FF" : "transparent",
