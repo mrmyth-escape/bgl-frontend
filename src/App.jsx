@@ -11,16 +11,68 @@ const SB_CONFIG = {
 
 // ── GAS 後端（排班 + 打卡 + 員工）─────────────────────────
 const GAS_URL = "https://script.google.com/macros/s/AKfycbwb319Bqz-_p-fDj_tIm62jaIRpMJ0mypwrOTGvyHUxR-WOhQxZ0ri8GS8uB2hFkfUzoQ/exec";
-async function callGAS(action, payload = {}) {
-  const res = await fetch(GAS_URL, {
-    method: "POST",
-    body: JSON.stringify({ action, payload }),
-    redirect: "follow",
-  });
-  if (!res.ok) throw new Error("GAS HTTP " + res.status);
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || "GAS error");
-  return json.data;
+
+// In-flight request 去重 + sessionStorage cache（避免重複打 GAS）
+const _gasInflight = new Map();
+const GAS_CACHE_TTL = 30 * 1000; // 30 秒內視為新鮮
+
+function _cacheKey(action, payload) {
+  try { return "gas:" + action + ":" + JSON.stringify(payload || {}); }
+  catch (e) { return "gas:" + action; }
+}
+
+function readGasCache(action, payload) {
+  try {
+    const raw = sessionStorage.getItem(_cacheKey(action, payload));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (Date.now() - obj.t > 5 * 60 * 1000) return null;  // 5 分鐘內都可當 stale fallback
+    return { data: obj.d, fresh: (Date.now() - obj.t) < GAS_CACHE_TTL };
+  } catch (e) { return null; }
+}
+
+function writeGasCache(action, payload, data) {
+  try { sessionStorage.setItem(_cacheKey(action, payload), JSON.stringify({ t: Date.now(), d: data })); }
+  catch (e) {}
+}
+
+async function callGAS(action, payload = {}, opts = {}) {
+  const key = _cacheKey(action, payload);
+
+  // 同樣的請求 in-flight 就 dedup
+  if (_gasInflight.has(key)) return _gasInflight.get(key);
+
+  const p = (async () => {
+    try {
+      const res = await fetch(GAS_URL, {
+        method: "POST",
+        body: JSON.stringify({ action, payload }),
+        redirect: "follow",
+      });
+      if (!res.ok) throw new Error("GAS HTTP " + res.status);
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || "GAS error");
+      if (opts.cache !== false) writeGasCache(action, payload, json.data);
+      return json.data;
+    } finally {
+      _gasInflight.delete(key);
+    }
+  })();
+  _gasInflight.set(key, p);
+  return p;
+}
+
+// stale-while-revalidate：立刻回 cache（若有），同時背景刷新
+function callGAScached(action, payload = {}, onFresh) {
+  const cached = readGasCache(action, payload);
+  if (cached) {
+    if (!cached.fresh) {
+      // 背景 reload
+      callGAS(action, payload).then(d => { if (onFresh) onFresh(d); }).catch(() => {});
+    }
+    return Promise.resolve(cached.data);
+  }
+  return callGAS(action, payload).then(d => { if (onFresh) onFresh(d); return d; });
 }
 
 // 場次狀態 UI 設定（icon / 顏色 / 文字）
@@ -668,15 +720,23 @@ function StaffApp({ account, schedule, punchLogs, staffData, onPunch, onLogout, 
 
   const me = staffData.find(s => s.id === account.staffId);
 
-  // 載入 GAS 真實資料：今日狀態 + viewMonth 月份排班
+  // 載入 GAS 真實資料：今日狀態 + viewMonth 月份排班（stale-while-revalidate）
   const reloadGAS = useCallback(async () => {
     if (!liveMode || !account.staffId) return;
+    const [y, m] = viewMonth.split('-').map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    const monthStart = `${viewMonth}-01`;
+    const monthEnd   = `${viewMonth}-${String(lastDay).padStart(2,'0')}`;
+
+    // 立刻顯示 cache
+    const cs = readGasCache('getTodayStatus', { empId: String(account.staffId) });
+    const cm = readGasCache('getMySchedule', { empId: String(account.staffId), from: monthStart, to: monthEnd });
+    if (cs) setTodayStatus(cs.data);
+    if (cm) setGasSched(cm.data?.schedule || []);
+    if (cs && cm && cs.fresh && cm.fresh) return;
+
     setLoading(true);
     try {
-      const [y, m] = viewMonth.split('-').map(Number);
-      const lastDay = new Date(y, m, 0).getDate();
-      const monthStart = `${viewMonth}-01`;
-      const monthEnd   = `${viewMonth}-${String(lastDay).padStart(2,'0')}`;
       const [status, sData] = await Promise.all([
         callGAS("getTodayStatus", { empId: String(account.staffId) }),
         callGAS("getMySchedule",  { empId: String(account.staffId), from: monthStart, to: monthEnd }),
@@ -1344,8 +1404,8 @@ function GasAdminEmbed({ onClose }) {
     return () => window.removeEventListener("message", handler);
   }, [ADMIN_PASS]);
 
-  // iframe src 帶 hash 第一道 SSO 保險
-  const iframeSrc = `${GAS_URL}?page=admin#adminPass=${encodeURIComponent(ADMIN_PASS)}`;
+  // v3.46：query string 給 GAS doGet server-side 驗證 + inject PRE_AUTH
+  const iframeSrc = `${GAS_URL}?page=admin&adminPass=${encodeURIComponent(ADMIN_PASS)}`;
 
   return (
     <div style={{ position:"fixed", inset:0, zIndex:100, background:"#fff", display:"flex", flexDirection:"column" }}>
@@ -1531,9 +1591,12 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     }
   }, [liveMode]);
 
-  // 系統狀態：切到設定 tab 時抓
+  // 系統狀態：切到設定 tab 時抓（stale-while-revalidate）
   const reloadSystemStatus = useCallback(async () => {
     if (!liveMode) return;
+    const c = readGasCache('getSystemStatus', {});
+    if (c) setSystemStatus(c.data);
+    if (c && c.fresh) return;
     try {
       const data = await callGAS('getSystemStatus');
       setSystemStatus(data);
@@ -1556,15 +1619,15 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
   useEffect(() => {
     if (!liveMode) return;
     let cancel = false;
-    const load = async () => {
-      try {
-        const data = await callGAS('getAdminOverview');
-        if (!cancel) setAdminOverview(data);
-      } catch (e) { console.warn('getAdminOverview 失敗:', e.message); }
+    // 立刻顯示 cache，背景靜默 reload
+    callGAScached('getAdminOverview', {}, (fresh) => {
+      if (!cancel) setAdminOverview(fresh);
+    }).then(d => { if (!cancel) setAdminOverview(d); }).catch(() => {});
+    reloadPendingReqs();
+    const id = setInterval(() => {
+      callGAS('getAdminOverview').then(d => { if (!cancel) setAdminOverview(d); }).catch(() => {});
       reloadPendingReqs();
-    };
-    load();
-    const id = setInterval(load, 60000);
+    }, 60000);
     return () => { cancel = true; clearInterval(id); };
   }, [liveMode, reloadPendingReqs]);
 
@@ -1582,13 +1645,20 @@ function AdminApp({ schedule, setSchedule, punchLogs, setPunchLogs, accounts, se
     }
   }, [reloadPendingReqs]);
 
-  // 載入本月薪資 + 商業報表（lazy：第一次切到薪資 tab 時抓）
+  // 載入本月薪資 + 商業報表（lazy：第一次切到薪資 tab 時抓，stale-while-revalidate）
   const reloadMonthSalary = useCallback(async () => {
     if (!liveMode) return;
+    const now = new Date();
+    const month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+    // 立刻顯示 cache（若有）
+    const cs = readGasCache('calculateMonthlySalary', { month });
+    const cb = readGasCache('getMonthBusinessReport', { month });
+    if (cs) setMonthSalary(cs.data);
+    if (cb) setBizReport(cb.data);
+    if (cs && cb && cs.fresh && cb.fresh) return; // 都新鮮就不打 API
+
     setSalaryLoading(true);
     try {
-      const now = new Date();
-      const month = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
       const [sal, biz] = await Promise.all([
         callGAS('calculateMonthlySalary', { month }),
         callGAS('getMonthBusinessReport', { month }).catch(() => null),
