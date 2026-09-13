@@ -28,7 +28,10 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import smtplib
+import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -287,25 +290,84 @@ def _roc_to_date(value: Any) -> dt.date | None:
         return None
 
 
+def _der_to_pem(blob: bytes) -> str | None:
+    if b"-----BEGIN CERTIFICATE-----" in blob:
+        return blob.decode("ascii", errors="ignore")
+    try:
+        return ssl.DER_cert_to_PEM_cert(blob)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fetch_aia_intermediate(host: str, port: int = 443) -> str | None:
+    """補回伺服器沒送的中介憑證。
+
+    www.tpex.org.tw 只送葉憑證，OpenSSL（Linux 的 python/curl）因此無法組出信任鏈；
+    Windows / macOS 會自動照憑證裡的 AIA 去抓，這裡做的就是同一件事。
+    抓回來的中介憑證仍然必須能一路串到系統內建的根憑證才會通過驗證，
+    所以這不等於關閉驗證。中介憑證優先用 HTTPS 下載（下載本身有完整驗證）。
+    """
+    try:
+        ctx = ssl._create_unverified_context()  # noqa: SLF001 - 只為了讀憑證內容，不傳資料
+        with socket.create_connection((host, port), timeout=20) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls:
+                der = tls.getpeercert(binary_form=True)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  無法讀取 {host} 的憑證：{exc}")
+        return None
+    if not der:
+        return None
+
+    urls = [u.decode("ascii") for u in re.findall(rb"http://[\w.~:/?#\[\]@!$&'()*+,;=%-]+", der)]
+    for url in urls:
+        if not url.lower().endswith((".crt", ".cer", ".pem")):
+            continue
+        for candidate, secure in (("https://" + url[len("http://") :], True), (url, False)):
+            try:
+                req = urllib.request.Request(candidate, headers={"User-Agent": UA})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    blob = resp.read()
+            except Exception:  # noqa: BLE001
+                continue
+            pem = _der_to_pem(blob)
+            if pem:
+                log(f"  已依憑證 AIA 取得中介憑證：{candidate}" + ("" if secure else "（純 HTTP 下載）"))
+                return pem
+    log(f"  憑證裡找不到可用的中介憑證位置（AIA 候選：{urls}）")
+    return None
+
+
 def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | None:
     """上櫃三大法人買賣超。
 
     來源是櫃買開放資料 API，**只提供最近一個交易日**，所以指定較舊日期時會放棄。
-    這個網域的憑證鏈不完整而且每次連線結果不一致，因此多重試幾次；
-    真的一直失敗時可用 TPEX_INSECURE_SSL=1 略過憑證驗證（公開資料，風險自負）。
+    這個網域只送葉憑證、沒送中介憑證，所以先正常連，失敗就自己把中介憑證補上再連。
     """
     context = None
     if os.environ.get("TPEX_INSECURE_SSL") == "1":
-        import ssl
-
         context = ssl._create_unverified_context()  # noqa: SLF001
         log("  TPEx：已依 TPEX_INSECURE_SSL=1 略過憑證驗證")
 
+    payload: Any = None
     try:
-        payload = http_get_json(TPEX_OPENAPI, retries=6, context=context)
+        payload = http_get_json(TPEX_OPENAPI, retries=2, context=context)
     except Exception as exc:  # noqa: BLE001
-        log(f"  TPEx 抓取失敗：{exc}")
-        return None
+        if context is not None or "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+            log(f"  TPEx 抓取失敗：{exc}")
+            return None
+        log("  TPEx 憑證鏈不完整，改以 AIA 補上中介憑證後重試")
+        pem = _fetch_aia_intermediate("www.tpex.org.tw")
+        if not pem:
+            return None
+        try:
+            fixed = ssl.create_default_context()  # 仍載入系統根憑證，驗證照做
+            fixed.load_verify_locations(cadata=pem)
+            payload = http_get_json(TPEX_OPENAPI, retries=3, context=fixed)
+            log("  TPEx 補上中介憑證後驗證成功")
+        except Exception as exc2:  # noqa: BLE001
+            log(f"  TPEx 補憑證後仍失敗：{exc2}")
+            log("  （可設 TPEX_INSECURE_SSL=1 略過驗證，或接受報告只含上市）")
+            return None
 
     if not isinstance(payload, list) or not payload:
         log(f"  TPEx 回應格式非預期：{type(payload).__name__}")
