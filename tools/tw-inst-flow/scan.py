@@ -54,8 +54,14 @@ def log(msg: str) -> None:
     print(f"[{ts}] {msg}", file=sys.stderr, flush=True)
 
 
-def http_get_json(url: str, referer: str | None = None, retries: int = 3, timeout: int = 30) -> Any:
-    """抓 JSON。失敗會重試（交易所常有瞬斷 / 流量限制）。"""
+def http_get_json(
+    url: str,
+    referer: str | None = None,
+    retries: int = 3,
+    timeout: int = 30,
+    context: Any = None,
+) -> Any:
+    """抓 JSON。失敗會重試（交易所常有瞬斷、流量限制、憑證鏈不完整）。"""
     headers = {
         "User-Agent": UA,
         "Accept": "application/json, text/javascript, text/plain, */*",
@@ -67,7 +73,7 @@ def http_get_json(url: str, referer: str | None = None, retries: int = 3, timeou
     for attempt in range(1, retries + 1):
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
                 raw = resp.read()
             text = raw.decode("utf-8-sig", errors="replace").strip()
             if not text:
@@ -210,57 +216,145 @@ def fetch_twse(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
 # --------------------------------------------------------------------------
 # 上櫃（TPEx）— 端點這幾年改過版，依序嘗試，哪個通用哪個
 # --------------------------------------------------------------------------
-def _tpex_tables(payload: Any) -> list[tuple[list[str], list[list[Any]]]]:
-    """從 TPEx 各種回傳格式中挖出 (fields, data) 組。"""
-    found: list[tuple[list[str], list[list[Any]]]] = []
-    if isinstance(payload, dict):
-        tables = payload.get("tables")
-        if isinstance(tables, list):
-            for tbl in tables:
-                if isinstance(tbl, dict) and tbl.get("fields") and tbl.get("data"):
-                    found.append(([str(f) for f in tbl["fields"]], tbl["data"]))
-        if not found and payload.get("fields") and payload.get("data"):
-            found.append(([str(f) for f in payload["fields"]], payload["data"]))
-        if not found and isinstance(payload.get("aaData"), list) and payload.get("fields"):
-            found.append(([str(f) for f in payload["fields"]], payload["aaData"]))
-    return found
+TPEX_OPENAPI = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
+
+
+def _norm(text: Any) -> str:
+    """正規化英文欄位名：小寫、括號換空白、壓縮空白。"""
+    s = str(text).lower()
+    for ch in "()（）":
+        s = s.replace(ch, " ")
+    return " ".join(s.split())
+
+
+def _tpex_role(prefix_norm: str) -> str | None:
+    """判斷這組欄位屬於哪個法人。"""
+    if "foreign investors" in prefix_norm:
+        return "foreign"  # 外陸資（不含外資自營商）
+    if "foreign dealers" in prefix_norm:
+        return "foreign_dealer"
+    if "investment trust" in prefix_norm:
+        return "trust"
+    if "dealers" in prefix_norm or "dealer" in prefix_norm:
+        return "dealer"
+    return None
+
+
+def _tpex_buy_sell_map(keys: list[str]) -> dict[str, dict[str, dict[str, str]]]:
+    """把 openapi 的欄位名整理成 {法人: {前綴: {'buy': key, 'sell': key}}}。
+
+    只認 'xxx-Total Buy' / 'xxx-Total Sell' 這種成對欄位，用買-賣自己算買賣超，
+    避免去猜「淨額」欄位到底叫什麼名字。
+    """
+    grouped: dict[str, dict[str, dict[str, str]]] = {}
+    for key in keys:
+        if "-" not in key:
+            continue
+        prefix, _, suffix = key.rpartition("-")
+        suffix_n = _norm(suffix)
+        if suffix_n not in ("total buy", "total sell"):
+            continue
+        prefix_n = _norm(prefix)
+        role = _tpex_role(prefix_n)
+        if not role:
+            continue
+        side = "buy" if suffix_n == "total buy" else "sell"
+        grouped.setdefault(role, {}).setdefault(prefix_n, {})[side] = key
+    return grouped
+
+
+def _tpex_net(row: dict[str, Any], group: dict[str, dict[str, str]]) -> float:
+    """同一法人若同時有合計與明細（自行買賣/避險），優先用合計避免重複計算。"""
+    complete = {p: k for p, k in group.items() if "buy" in k and "sell" in k}
+    if not complete:
+        return 0.0
+    aggregates = {
+        p: k
+        for p, k in complete.items()
+        if not any(word in p for word in ("proprietary", "hedge", "自行", "避險"))
+    }
+    chosen = aggregates or complete
+    return sum(to_num(row.get(k["buy"])) - to_num(row.get(k["sell"])) for k in chosen.values())
+
+
+def _roc_to_date(value: Any) -> dt.date | None:
+    text = str(value).strip()
+    if len(text) not in (6, 7) or not text.isdigit():
+        return None
+    try:
+        return dt.date(int(text[:-4]) + 1911, int(text[-4:-2]), int(text[-2:]))
+    except ValueError:
+        return None
 
 
 def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | None:
-    candidates = [
-        "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
-        f"?type=Daily&sect=EW&date={day:%Y/%m/%d}&id=&response=json",
-        "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
-        f"?type=Daily&sect=EW&date={day:%Y%m%d}&id=&response=json",
-    ]
-    for url in candidates:
-        try:
-            payload = http_get_json(url, referer="https://www.tpex.org.tw/zh-tw/mainboard/trading/major-institutional/daily.html")
-        except Exception as exc:  # noqa: BLE001
-            if verbose:
-                log(f"  TPEx 端點失敗：{url} -> {exc}")
+    """上櫃三大法人買賣超。
+
+    來源是櫃買開放資料 API，**只提供最近一個交易日**，所以指定較舊日期時會放棄。
+    這個網域的憑證鏈不完整而且每次連線結果不一致，因此多重試幾次；
+    真的一直失敗時可用 TPEX_INSECURE_SSL=1 略過憑證驗證（公開資料，風險自負）。
+    """
+    context = None
+    if os.environ.get("TPEX_INSECURE_SSL") == "1":
+        import ssl
+
+        context = ssl._create_unverified_context()  # noqa: SLF001
+        log("  TPEx：已依 TPEX_INSECURE_SSL=1 略過憑證驗證")
+
+    try:
+        payload = http_get_json(TPEX_OPENAPI, retries=6, context=context)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  TPEx 抓取失敗：{exc}")
+        return None
+
+    if not isinstance(payload, list) or not payload:
+        log(f"  TPEx 回應格式非預期：{type(payload).__name__}")
+        return None
+
+    keys = list(payload[0].keys())
+    if verbose:
+        log(f"  TPEx 筆數：{len(payload)}；欄位({len(keys)})：{keys}")
+
+    feed_day = _roc_to_date(payload[0].get("Date"))
+    if verbose:
+        log(f"  TPEx 資料日期：{feed_day}")
+    if feed_day and feed_day != day:
+        log(f"  TPEx 只提供最新交易日（{feed_day}），與要求的 {day} 不符，本次略過上櫃")
+        return None
+
+    groups = _tpex_buy_sell_map(keys)
+    if verbose:
+        log(f"  TPEx 欄位對應：{ {r: list(g) for r, g in groups.items()} }")
+    if "foreign" not in groups or "trust" not in groups:
+        log(f"  TPEx 欄位對應失敗，實際欄位={keys}")
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
             continue
-        tables = _tpex_tables(payload)
-        if verbose:
-            keys = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
-            log(f"  TPEx 回應 keys={keys}，解析到 {len(tables)} 張表：{url}")
-            for fields, data in tables:
-                log(f"    欄位({len(fields)})：{fields}")
-                log(f"    筆數：{len(data)}；首列：{data[0] if data else None}")
-        for fields, data in tables:
-            if not data:
-                continue
-            try:
-                rows = rows_from_table(fields, data, "上櫃")
-            except ValueError as exc:
-                if verbose:
-                    log(f"    這張表不是要的：{exc}")
-                continue
-            if rows:
-                if verbose:
-                    log(f"  TPEx 解析後 {len(rows)} 檔，範例：{rows[0]}")
-                return rows
-    return None
+        code = str(item.get("SecuritiesCompanyCode", "")).strip()
+        name = str(item.get("CompanyName", "")).strip()
+        if not (len(code) == 4 and code.isdigit()) or not name:
+            continue
+        foreign = _tpex_net(item, groups.get("foreign", {}))
+        foreign += _tpex_net(item, groups.get("foreign_dealer", {}))
+        trust = _tpex_net(item, groups.get("trust", {}))
+        dealer = _tpex_net(item, groups.get("dealer", {}))
+        rows.append(
+            {
+                "code": code,
+                "name": name,
+                "market": "上櫃",
+                "foreign": foreign,
+                "trust": trust,
+                "dealer": dealer,
+                "total": foreign + trust + dealer,
+            }
+        )
+    if verbose and rows:
+        log(f"  TPEx 解析後 {len(rows)} 檔，範例：{rows[0]}")
+    return rows or None
 
 
 # --------------------------------------------------------------------------
@@ -284,14 +378,16 @@ def collect_days(target: dt.date | None, days: int, verbose: bool = False) -> li
         if listed:
             rows = list(listed)
             otc = None
-            try:
-                otc = fetch_tpex(cursor, verbose=verbose and len(collected) == 0)
-            except Exception as exc:  # noqa: BLE001
-                log(f"  {cursor:%Y-%m-%d} 上櫃資料抓取失敗：{exc}")
-            if otc:
-                rows.extend(otc)
-            else:
-                log(f"  {cursor:%Y-%m-%d} 僅取得上市資料（上櫃缺）")
+            # 櫃買開放資料只有最新交易日，所以只在最近這天抓上櫃
+            if not collected:
+                try:
+                    otc = fetch_tpex(cursor, verbose=verbose)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"  {cursor:%Y-%m-%d} 上櫃資料抓取失敗：{exc}")
+                if otc:
+                    rows.extend(otc)
+                else:
+                    log(f"  {cursor:%Y-%m-%d} 僅取得上市資料（上櫃缺）")
             collected.append((cursor, rows))
             log(f"  {cursor:%Y-%m-%d} 取得 {len(rows)} 檔（上市 {len(listed)} / 上櫃 {len(otc) if otc else 0}）")
         cursor -= dt.timedelta(days=1)
@@ -395,6 +491,7 @@ def report_to_text(rep: dict[str, Any]) -> str:
         f"外資 {lots(t['foreign']):,.0f}、投信 {lots(t['trust']):,.0f}、自營商 {lots(t['dealer']):,.0f}"
     )
     out.append(f"連續天數統計採用交易日：{', '.join(f'{d:%m/%d}' for d in rep['days_used'])}")
+    out.append("（上櫃資料來源只提供最新交易日，故連續買賣超天數僅統計上市股票）")
 
     sections = [
         ("外資買超前 %d 名" % len(rep["foreign_buy"]), rep["foreign_buy"], "foreign"),
@@ -481,7 +578,8 @@ def report_to_html(rep: dict[str, Any], ai_text: str | None) -> str:
         parts.append(_table_html(items, key))
     parts.append(
         f'<p style="color:#888;font-size:12px;line-height:1.6;margin-top:24px">'
-        f'連續天數採用交易日：{", ".join(f"{d:%m/%d}" for d in rep["days_used"])}<br>{DISCLAIMER}</p>'
+        f'連續天數採用交易日：{", ".join(f"{d:%m/%d}" for d in rep["days_used"])}'
+        f'（上櫃資料來源只提供最新交易日，連續天數僅統計上市）<br>{DISCLAIMER}</p>'
     )
     parts.append("</div>")
     return "".join(parts)
