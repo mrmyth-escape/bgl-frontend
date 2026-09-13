@@ -52,6 +52,8 @@ jobs:
           fi
 
       - name: 產生簡報
+        # push 時只是結構探測；後端尚未設定完成前失敗是預期的，不讓分支變紅燈
+        continue-on-error: ${{ github.event_name == 'push' }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
