@@ -323,10 +323,12 @@ def _fetch_aia_intermediate(host: str, port: int = 443) -> str | None:
     if not der:
         return None
 
-    urls = [u.decode("ascii") for u in re.findall(rb"http://[\w.~:/?#\[\]@!$&'()*+,;=%-]+", der)]
+    # DER 是二進位，URL 後面直接接著其他欄位的位元組，所以非貪婪比對到副檔名就停
+    urls = [
+        u.decode("ascii")
+        for u in re.findall(rb"http://[\w.~:/?#@!$&'()*+,;=%-]+?\.(?:crt|cer|pem)", der)
+    ]
     for url in urls:
-        if not url.lower().endswith((".crt", ".cer", ".pem")):
-            continue
         for candidate, secure in (("https://" + url[len("http://") :], True), (url, False)):
             try:
                 req = urllib.request.Request(candidate, headers={"User-Agent": UA})
