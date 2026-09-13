@@ -227,62 +227,39 @@ def fetch_twse(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
 TPEX_OPENAPI = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
 
 
-def _norm(text: Any) -> str:
-    """正規化英文欄位名：小寫、括號換空白、壓縮空白。"""
-    s = str(text).lower()
-    for ch in "()（）":
-        s = s.replace(ch, " ")
-    return " ".join(s.split())
+def _key(text: Any) -> str:
+    """正規化欄位名。櫃買的欄位命名很不一致（Total Buy / TotalBuy / 前後多空白），
+    所以直接把所有空白拿掉再比對。"""
+    return re.sub(r"\s+", "", str(text)).lower()
 
 
-def _tpex_role(prefix_norm: str) -> str | None:
-    """判斷這組欄位屬於哪個法人。"""
-    if "foreign investors" in prefix_norm:
-        return "foreign"  # 外陸資（不含外資自營商）
-    if "foreign dealers" in prefix_norm:
-        return "foreign_dealer"
-    if "investment trust" in prefix_norm:
-        return "trust"
-    if "dealers" in prefix_norm or "dealer" in prefix_norm:
-        return "dealer"
-    return None
-
-
-def _tpex_buy_sell_map(keys: list[str]) -> dict[str, dict[str, dict[str, str]]]:
-    """把 openapi 的欄位名整理成 {法人: {前綴: {'buy': key, 'sell': key}}}。
-
-    只認 'xxx-Total Buy' / 'xxx-Total Sell' 這種成對欄位，用買-賣自己算買賣超，
-    避免去猜「淨額」欄位到底叫什麼名字。
-    """
-    grouped: dict[str, dict[str, dict[str, str]]] = {}
+def _tpex_diff_map(keys: list[str]) -> dict[str, str]:
+    """找出各法人的「買賣超」欄位（櫃買叫 -Difference）。回傳 {角色: 原始欄位名}。"""
+    found: dict[str, str] = {}
     for key in keys:
-        if "-" not in key:
+        n = _key(key)
+        if not n.endswith("difference"):
             continue
-        prefix, _, suffix = key.rpartition("-")
-        suffix_n = _norm(suffix)
-        if suffix_n not in ("total buy", "total sell"):
-            continue
-        prefix_n = _norm(prefix)
-        role = _tpex_role(prefix_n)
-        if not role:
-            continue
-        side = "buy" if suffix_n == "total buy" else "sell"
-        grouped.setdefault(role, {}).setdefault(prefix_n, {})[side] = key
-    return grouped
+        if n == "totaldifference":
+            found.setdefault("total", key)
+        elif "investmenttrust" in n:
+            found.setdefault("trust", key)
+        elif "excluded" in n:  # 外陸資（不含外資自營商），要在 foreigndealers 之前判斷
+            found.setdefault("foreign_excl", key)
+        elif "foreigndealers" in n:
+            found.setdefault("foreign_dealer", key)
+        elif "foreigninvestors" in n:
+            found.setdefault("foreign_all", key)  # 外資合計（含外資自營商）
+        elif "dealers" in n:
+            found.setdefault("dealer", key)
+    return found
 
 
-def _tpex_net(row: dict[str, Any], group: dict[str, dict[str, str]]) -> float:
-    """同一法人若同時有合計與明細（自行買賣/避險），優先用合計避免重複計算。"""
-    complete = {p: k for p, k in group.items() if "buy" in k and "sell" in k}
-    if not complete:
-        return 0.0
-    aggregates = {
-        p: k
-        for p, k in complete.items()
-        if not any(word in p for word in ("proprietary", "hedge", "自行", "避險"))
-    }
-    chosen = aggregates or complete
-    return sum(to_num(row.get(k["buy"])) - to_num(row.get(k["sell"])) for k in chosen.values())
+def _tpex_foreign(row: dict[str, Any], cols: dict[str, str]) -> float:
+    """外資以「含外資自營商」為準，與上市的算法一致。"""
+    if "foreign_all" in cols:
+        return to_num(row.get(cols["foreign_all"]))
+    return to_num(row.get(cols.get("foreign_excl", ""))) + to_num(row.get(cols.get("foreign_dealer", "")))
 
 
 def _roc_to_date(value: Any) -> dt.date | None:
@@ -391,10 +368,11 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
         log(f"  TPEx 只提供最新交易日（{feed_day}），與要求的 {day} 不符，本次略過上櫃")
         return None
 
-    groups = _tpex_buy_sell_map(keys)
+    cols = _tpex_diff_map(keys)
     if verbose:
-        log(f"  TPEx 欄位對應：{ {r: list(g) for r, g in groups.items()} }")
-    if "foreign" not in groups or "trust" not in groups:
+        log(f"  TPEx 欄位對應：{cols}")
+    has_foreign = "foreign_all" in cols or "foreign_excl" in cols
+    if not has_foreign or "trust" not in cols:
         log(f"  TPEx 欄位對應失敗，實際欄位={keys}")
         return None
 
@@ -406,10 +384,10 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
         name = str(item.get("CompanyName", "")).strip()
         if not (len(code) == 4 and code.isdigit()) or not name:
             continue
-        foreign = _tpex_net(item, groups.get("foreign", {}))
-        foreign += _tpex_net(item, groups.get("foreign_dealer", {}))
-        trust = _tpex_net(item, groups.get("trust", {}))
-        dealer = _tpex_net(item, groups.get("dealer", {}))
+        foreign = _tpex_foreign(item, cols)
+        trust = to_num(item.get(cols.get("trust", "")))
+        dealer = to_num(item.get(cols.get("dealer", "")))
+        total = to_num(item.get(cols["total"])) if "total" in cols else foreign + trust + dealer
         rows.append(
             {
                 "code": code,
@@ -418,7 +396,7 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
                 "foreign": foreign,
                 "trust": trust,
                 "dealer": dealer,
-                "total": foreign + trust + dealer,
+                "total": total,
             }
         )
     if verbose and rows:
