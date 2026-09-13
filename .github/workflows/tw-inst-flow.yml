@@ -44,7 +44,7 @@ jobs:
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "mode=dry-run" >> "$GITHUB_OUTPUT"
+            echo "mode=selftest" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "schedule" ]; then
             echo "mode=send" >> "$GITHUB_OUTPUT"
           else

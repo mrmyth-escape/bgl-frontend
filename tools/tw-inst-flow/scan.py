@@ -177,6 +177,11 @@ def fmt_lots(shares: float) -> str:
 # --------------------------------------------------------------------------
 # 欄位對應（用「欄位名稱」找欄位，不寫死索引，交易所加欄位也不會壞）
 # --------------------------------------------------------------------------
+def _is_common_stock(code: str) -> bool:
+    """只留普通股：4 碼數字且不以 0 開頭（0050、0056、00878 等都是 ETF）。"""
+    return len(code) == 4 and code.isdigit() and not code.startswith("0")
+
+
 def _base_name(field: str) -> str:
     """去掉括號註記，例如『外陸資買賣超股數(不含外資自營商)』-> 『外陸資買賣超股數』。"""
     return str(field).split("(")[0].split("（")[0].strip()
@@ -226,8 +231,7 @@ def rows_from_table(fields: list[str], data: list[list[Any]], market: str) -> li
         name = str(row[idx["name"]]).strip()
         if not code or not name:
             continue
-        # 只留一般股票代號（4 碼數字），過濾 ETF/權證/特別股等雜訊
-        if not (len(code) == 4 and code.isdigit()):
+        if not _is_common_stock(code):
             continue
         foreign = to_num(row[idx["foreign"]])
         if "foreign_dealer" in idx:
@@ -444,7 +448,7 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
             continue
         code = str(item.get("SecuritiesCompanyCode", "")).strip()
         name = str(item.get("CompanyName", "")).strip()
-        if not (len(code) == 4 and code.isdigit()) or not name:
+        if not _is_common_stock(code) or not name:
             continue
         foreign = _tpex_foreign(item, cols)
         trust = to_num(item.get(cols.get("trust", "")))
@@ -548,11 +552,12 @@ def build_report(
     for row in rows:
         row["foreign_streak"] = foreign_streak.get(row["code"], 0)
         row["trust_streak"] = trust_streak.get(row["code"], 0)
+        row["pair"] = row["foreign"] + row["trust"]  # 外資+投信合計
 
     both_buy = [r for r in rows if r["foreign"] > 0 and r["trust"] > 0]
-    both_buy.sort(key=lambda r: r["foreign"] + r["trust"], reverse=True)
+    both_buy.sort(key=lambda r: r["pair"], reverse=True)
     both_sell = [r for r in rows if r["foreign"] < 0 and r["trust"] < 0]
-    both_sell.sort(key=lambda r: r["foreign"] + r["trust"])
+    both_sell.sort(key=lambda r: r["pair"])
 
     long_foreign = [r for r in rows if r["foreign_streak"] >= 3]
     long_foreign.sort(key=lambda r: (-r["foreign_streak"], -r["foreign"]))
@@ -580,7 +585,7 @@ def build_report(
 
 
 def _line(row: dict[str, Any], key: str) -> str:
-    streak_key = "foreign_streak" if key == "foreign" else "trust_streak"
+    streak_key = "trust_streak" if key == "trust" else "foreign_streak"
     streak = row.get(streak_key, 0)
     tag = ""
     if streak >= 2:
@@ -607,8 +612,8 @@ def report_to_text(rep: dict[str, Any]) -> str:
         ("外資賣超前 %d 名" % len(rep["foreign_sell"]), rep["foreign_sell"], "foreign"),
         ("投信買超前 %d 名" % len(rep["trust_buy"]), rep["trust_buy"], "trust"),
         ("投信賣超前 %d 名" % len(rep["trust_sell"]), rep["trust_sell"], "trust"),
-        ("外資+投信同步買超", rep["both_buy"], "foreign"),
-        ("外資+投信同步賣超", rep["both_sell"], "foreign"),
+        ("外資+投信同步買超（合計）", rep["both_buy"], "pair"),
+        ("外資+投信同步賣超（合計）", rep["both_sell"], "pair"),
         ("外資連買 3 日以上", rep["long_foreign"], "foreign"),
         ("投信連買 3 日以上", rep["long_trust"], "trust"),
     ]
@@ -632,7 +637,7 @@ def _table_html(items: list[dict[str, Any]], key: str) -> str:
         '<th align="right">買賣超(張)</th><th align="right">連續</th></tr>'
     )
     body = []
-    streak_key = "foreign_streak" if key == "foreign" else "trust_streak"
+    streak_key = "trust_streak" if key == "trust" else "foreign_streak"
     for row in items:
         value = row[key]
         color = "#c0392b" if value > 0 else "#1e7e34"
@@ -678,8 +683,8 @@ def report_to_html(rep: dict[str, Any], ai_text: str | None) -> str:
         ("外資賣超排行", rep["foreign_sell"], "foreign"),
         ("投信買超排行", rep["trust_buy"], "trust"),
         ("投信賣超排行", rep["trust_sell"], "trust"),
-        ("外資＋投信同步買超", rep["both_buy"], "foreign"),
-        ("外資＋投信同步賣超", rep["both_sell"], "foreign"),
+        ("外資＋投信同步買超（合計）", rep["both_buy"], "pair"),
+        ("外資＋投信同步賣超（合計）", rep["both_sell"], "pair"),
         ("外資連買 3 日以上", rep["long_foreign"], "foreign"),
         ("投信連買 3 日以上", rep["long_trust"], "trust"),
     ]:
