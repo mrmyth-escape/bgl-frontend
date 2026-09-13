@@ -92,6 +92,17 @@ def _error_detail(exc: Exception) -> str:
     return f"{exc} ｜ 回應內容：{flat[:300]}"
 
 
+def _auth_headers() -> dict[str, str]:
+    """後端的 /api/bookings 需要 APP_API_KEY。
+
+    後端預期的標頭名稱未知，所以兩種常見寫法都送，多送一個不會有副作用。
+    """
+    key = os.environ.get("APP_API_KEY", "").strip()
+    if not key:
+        return {}
+    return {"x-api-key": key, "Authorization": f"Bearer {key}"}
+
+
 def http_json(
     url: str,
     payload: Any = None,
@@ -112,6 +123,8 @@ def http_json(
         ),
         "Accept": "application/json, text/plain, */*",
     }
+    if url.startswith(BACKEND_URL):
+        headers.update(_auth_headers())
     body = None
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
@@ -316,11 +329,34 @@ def staffing_gaps(today: dict[str, Any], shifts: list[dict[str, Any]]) -> dict[s
     }
 
 
+def demo_rows(day: dt.date, seed: int) -> list[dict[str, Any]]:
+    """產生示範用的假訂位，讓人先看得到報表長相。內容全部是捏造的。"""
+    plan = {
+        0: [(2, ["14:00", "16:00", "20:00"]), (3, ["15:00"]), (14, ["13:00", "19:00"]),
+            (11, ["14:00", "19:00", "21:00"]), (16, ["16:00", "20:00"])],
+        1: [(2, ["14:00", "19:00"]), (15, ["18:00"]), (11, ["19:00"]), (16, ["20:00"])],
+        2: [(2, ["14:00", "16:00"]), (3, ["15:00", "18:00"]), (14, ["13:00"]),
+            (11, ["14:00", "19:00"]), (17, ["16:00"]), (16, ["16:00", "20:00"])],
+    }[seed % 3]
+    rows: list[dict[str, Any]] = []
+    for service_id, times in plan:
+        for t in times:
+            rows.append({
+                "id": len(rows) + 1,
+                "service_id": service_id,
+                "start_date": f"{day:%Y-%m-%d}",
+                "start_time": f"{t}:00",
+                "status": "confirmed",
+            })
+    return rows
+
+
 def build_brief(
     today: dict[str, Any],
     tomorrow: dict[str, Any],
     last_week: dict[str, Any] | None,
     staffing: dict[str, Any],
+    demo: bool = False,
 ) -> dict[str, Any]:
     delta = None
     if last_week:
@@ -335,6 +371,7 @@ def build_brief(
         "delta": delta,
         "quiet_rooms_tomorrow": quiet_rooms,
         "staffing": staffing,
+        "demo": demo,
     }
 
 
@@ -348,6 +385,8 @@ def day_label(day: dt.date) -> str:
 def brief_to_text(brief: dict[str, Any]) -> str:
     today, tomorrow = brief["today"], brief["tomorrow"]
     out: list[str] = [f"# 密室每日戰情 {day_label(today['day'])}"]
+    if brief.get("demo"):
+        out.append("⚠️ 以下全部是示範用的假資料，只用來看報表長相，不是真實訂位。")
 
     line = f"今日總場次：{today['total']} 場"
     if brief["delta"] is not None:
@@ -426,6 +465,12 @@ def brief_to_html(brief: dict[str, Any], ai_text: str | None) -> str:
         + "、".join(f"{b} {n} 場" for b, n in today["per_branch"].items())
         + "</p>",
     ]
+    if brief.get("demo"):
+        parts.append(
+            '<p style="background:#FDEBEB;border:1px solid #E0A0A0;color:#8A1F1F;padding:10px 12px;'
+            'border-radius:4px;font-size:14px;margin:0 0 16px">'
+            "⚠️ <b>示範資料</b>：下面的場次全部是捏造的，只用來看報表長相，不是真實訂位。</p>"
+        )
     if ai_text:
         safe = ai_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
         parts.append(
@@ -620,6 +665,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="不寄信，只印報告")
     parser.add_argument("--no-ai", action="store_true", help="跳過 AI 摘要")
     parser.add_argument("--selftest", action="store_true", help="只探測 API 結構")
+    parser.add_argument("--demo", action="store_true", help="用假資料產生報表，純粹看長相")
     parser.add_argument("--out", help="另存報告的資料夾")
     args = parser.parse_args(argv)
 
@@ -627,6 +673,34 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.selftest:
         return run_selftest(day)
+
+    if args.demo:
+        log("示範模式：使用假資料，不連線任何系統")
+        tomorrow_d = day + dt.timedelta(days=1)
+        last_week_d = day - dt.timedelta(days=7)
+        today_sum = summarize_day(day, demo_rows(day, 0))
+        tomorrow_sum = summarize_day(tomorrow_d, demo_rows(tomorrow_d, 1))
+        last_week_sum = summarize_day(last_week_d, demo_rows(last_week_d, 2))
+        demo_shifts = [
+            {"name": "示範A", "theme": "孤兒怨"}, {"name": "示範B", "theme": "詭獄"},
+            {"name": "示範C", "theme": "越獄者"},
+        ]
+        brief = build_brief(today_sum, tomorrow_sum, last_week_sum,
+                            staffing_gaps(today_sum, demo_shifts), demo=True)
+        text = brief_to_text(brief)
+        ai_text = None if args.no_ai else ai_comment(text)
+        html = brief_to_html(brief, ai_text)
+        if args.out:
+            os.makedirs(args.out, exist_ok=True)
+            with open(os.path.join(args.out, "demo.html"), "w", encoding="utf-8") as fh:
+                fh.write(html)
+            log(f"示範報表已存到 {args.out}/demo.html")
+        print(f"【密室戰情｜示範】{day_label(day)}")
+        print()
+        print(text)
+        if ai_text:
+            print("\n## AI 重點\n" + ai_text)
+        return 0
 
     log(f"抓取 {day} 的訂位…")
     today_rows, used = fetch_bookings(day, verbose=True)
