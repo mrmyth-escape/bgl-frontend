@@ -80,13 +80,43 @@ def taipei_today() -> dt.date:
     return dt.datetime.now(TPE_TZ).date()
 
 
-def http_json(url: str, payload: Any = None, retries: int = 3, timeout: int = 25) -> Any:
-    """GET（payload=None）或 POST JSON。失敗會重試。"""
-    headers = {"User-Agent": UA, "Accept": "application/json, text/plain, */*"}
+def _error_detail(exc: Exception) -> str:
+    """把伺服器回的錯誤內容濃縮成一行，方便判斷是誰壞了。"""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return str(exc)
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return str(exc)
+    flat = " ".join(body.replace("<", " <").split())
+    return f"{exc} ｜ 回應內容：{flat[:300]}"
+
+
+def http_json(
+    url: str,
+    payload: Any = None,
+    retries: int = 3,
+    timeout: int = 25,
+    json_content_type: bool = False,
+) -> Any:
+    """GET（payload=None）或 POST。失敗會重試。
+
+    預設 POST 不加 Content-Type，與前端 callGAS() 的送法一致
+    （Apps Script 對 application/json 的處理和瀏覽器預設的 text/plain 不同）。
+    """
+    headers = {
+        # Apps Script / Cloudflare 類的服務會擋掉看起來像機器人的 UA
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+    }
     body = None
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+        if json_content_type:
+            headers["Content-Type"] = "application/json"
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
@@ -101,7 +131,7 @@ def http_json(url: str, payload: Any = None, retries: int = 3, timeout: int = 25
             last_err = exc
             if attempt < retries:
                 time.sleep(1.5 * attempt)
-    raise RuntimeError(f"請求失敗 {url} -> {last_err}")
+    raise RuntimeError(f"請求失敗 {url} -> {_error_detail(last_err) if last_err else '未知錯誤'}")
 
 
 def shape(value: Any, depth: int = 0) -> Any:
@@ -548,7 +578,26 @@ def run_selftest(day: dt.date) -> int:
             svc = sorted({str(r.get('service_id') or r.get('serviceId') or '?') for r in rows})
             log(f"    service_id：{svc}")
 
+    try:
+        root = http_json(f"{BACKEND_URL}/", retries=1)
+        log(f"  / -> {shape(root)}")
+    except Exception as exc:  # noqa: BLE001
+        log(f"  / 失敗：{exc}")
+
     log("--- GAS ---")
+    # 先確認這個網址從伺服器端到底能不能通（瀏覽器可以不代表 CI 可以）
+    for label, kwargs in (
+        ("GET（不帶內容）", {"payload": None}),
+        ("POST 不帶 Content-Type（與前端相同）", {"payload": {"action": "getStaffPublic", "payload": {}}}),
+        ("POST 帶 application/json", {"payload": {"action": "getStaffPublic", "payload": {}}, "json_content_type": True}),
+    ):
+        try:
+            data = http_json(GAS_URL, retries=1, **kwargs)
+            log(f"  {label} -> {shape(data)}")
+            ok_any = True
+        except Exception as exc:  # noqa: BLE001
+            log(f"  {label} 失敗：{exc}")
+
     for action in ("getTodayStatus", "getAdminOverview", "getStaffPublic"):
         try:
             data = fetch_gas(action)
