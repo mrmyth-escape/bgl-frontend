@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
 import json
 import os
 import re
@@ -69,6 +70,8 @@ def http_get_json(
         "User-Agent": UA,
         "Accept": "application/json, text/javascript, text/plain, */*",
         "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        # 櫃買的檔案有 800KB 以上，不壓縮常常傳到一半被切斷
+        "Accept-Encoding": "gzip",
     }
     if referer:
         headers["Referer"] = referer
@@ -78,6 +81,8 @@ def http_get_json(
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
                 raw = resp.read()
+                if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
+                    raw = gzip.decompress(raw)
             text = raw.decode("utf-8-sig", errors="replace").strip()
             if not text:
                 raise ValueError("空回應")
@@ -350,7 +355,7 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
 
     payload: Any = None
     try:
-        payload = http_get_json(TPEX_OPENAPI, retries=2, context=context)
+        payload = http_get_json(TPEX_OPENAPI, retries=4, context=context)
     except Exception as exc:  # noqa: BLE001
         if context is not None or "CERTIFICATE_VERIFY_FAILED" not in str(exc):
             log(f"  TPEx 抓取失敗：{exc}")
@@ -362,7 +367,7 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
         try:
             fixed = ssl.create_default_context()  # 仍載入系統根憑證，驗證照做
             fixed.load_verify_locations(cadata=pem)
-            payload = http_get_json(TPEX_OPENAPI, retries=3, context=fixed)
+            payload = http_get_json(TPEX_OPENAPI, retries=4, context=fixed)
             log("  TPEx 補上中介憑證後驗證成功")
         except Exception as exc2:  # noqa: BLE001
             log(f"  TPEx 補憑證後仍失敗：{exc2}")
