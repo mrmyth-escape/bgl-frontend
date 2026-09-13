@@ -1,0 +1,79 @@
+name: 台股法人資金流日報
+
+on:
+  schedule:
+    # 10:00 UTC = 台北時間 18:00，週一到週五（證交所約 16:00-17:30 公布當日法人買賣超）
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "執行模式"
+        required: true
+        default: selftest
+        type: choice
+        options: [selftest, dry-run, send]
+      date:
+        description: "指定日期 YYYYMMDD（留空=最近交易日）"
+        required: false
+        type: string
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "tools/tw-inst-flow/**"
+      - ".github/workflows/tw-inst-flow.yml"
+
+concurrency:
+  group: tw-inst-flow-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安裝 Anthropic SDK（AI 分析用）
+        run: pip install --quiet anthropic
+
+      - name: 決定執行模式
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "mode=selftest" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "mode=send" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 執行掃描
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: |
+          set -e
+          ARGS=""
+          [ -n "${{ inputs.date }}" ] && ARGS="--date ${{ inputs.date }}"
+          case "${{ steps.mode.outputs.mode }}" in
+            selftest) python tools/tw-inst-flow/scan.py --selftest $ARGS ;;
+            dry-run)  python tools/tw-inst-flow/scan.py --dry-run --out out $ARGS ;;
+            send)     python tools/tw-inst-flow/scan.py --out out $ARGS ;;
+          esac
+
+      - name: 保留報告檔（方便事後查看）
+        if: steps.mode.outputs.mode != 'selftest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tw-inst-flow-report
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 30
