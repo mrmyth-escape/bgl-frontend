@@ -51,6 +51,53 @@ jobs:
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: TPEx 連線診斷（暫時）
+        if: steps.mode.outputs.mode == 'selftest'
+        continue-on-error: true
+        run: |
+          U=https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading
+          echo "=== curl 連三次（看是否每次結果都一樣） ==="
+          for i in 1 2 3; do
+            curl -sS -o /dev/null -m 40 -w "  第$i次 http=%{http_code} ip=%{remote_ip} alpn\n" "$U" || echo "  第$i次 失敗"
+          done
+          echo "=== curl -4 / -6 ==="
+          curl -4 -sS -o /dev/null -m 40 -w "  IPv4 http=%{http_code} ip=%{remote_ip}\n" "$U" || echo "  IPv4 失敗"
+          curl -6 -sS -o /dev/null -m 40 -w "  IPv6 http=%{http_code} ip=%{remote_ip}\n" "$U" || echo "  IPv6 失敗"
+          echo "=== DNS ==="
+          getent ahosts www.tpex.org.tw | head
+          echo "=== 憑證鏈與簽發者 ==="
+          echo | openssl s_client -connect www.tpex.org.tw:443 -servername www.tpex.org.tw 2>/dev/null > /tmp/sc.txt
+          grep -E "^(depth|verify|Verify| [0-9] (s|i):)" /tmp/sc.txt | head -20
+          openssl x509 -in /tmp/sc.txt -noout -issuer -ext authorityInfoAccess 2>/dev/null || true
+          echo "=== python 幾種連法 ==="
+          python - <<'PY'
+          import socket, ssl, urllib.request
+          U = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
+          def attempt(label, ctx):
+              try:
+                  req = urllib.request.Request(U, headers={"User-Agent": "Mozilla/5.0"})
+                  with urllib.request.urlopen(req, timeout=40, context=ctx) as r:
+                      n = len(r.read())
+                  print(f"  {label}: OK {r.status} bytes={n}")
+              except Exception as exc:
+                  print(f"  {label}: 失敗 {type(exc).__name__} {exc}")
+          attempt("預設", None)
+          c = ssl.create_default_context(); c.set_alpn_protocols(["h2", "http/1.1"])
+          attempt("ALPN h2", c)
+          c2 = ssl.create_default_context(); c2.minimum_version = ssl.TLSVersion.TLSv1_2
+          attempt("TLS1.2+", c2)
+          for fam, label in ((socket.AF_INET, "IPv4"), (socket.AF_INET6, "IPv6")):
+              try:
+                  infos = socket.getaddrinfo("www.tpex.org.tw", 443, fam)
+                  ip = infos[0][4][0]
+                  ctx = ssl.create_default_context()
+                  with socket.create_connection((ip, 443), timeout=20) as s:
+                      with ctx.wrap_socket(s, server_hostname="www.tpex.org.tw") as ss:
+                          print(f"  {label} {ip}: 握手 OK {ss.version()}")
+              except Exception as exc:
+                  print(f"  {label}: 失敗 {type(exc).__name__} {exc}")
+          PY
+
       - name: 執行掃描
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
