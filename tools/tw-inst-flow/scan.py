@@ -94,6 +94,60 @@ def http_get_json(
     raise RuntimeError(f"抓取失敗 {url} -> {last_err}")
 
 
+def http_get_json_ranged(
+    url: str,
+    context: Any = None,
+    chunk: int = 256 * 1024,
+    timeout: int = 30,
+    tries_per_chunk: int = 4,
+) -> Any:
+    """分段（HTTP Range）把大檔抓下來。
+
+    櫃買的 800KB 檔案常在傳到一半被切斷，一次抓一小段比較不會斷；
+    斷掉也只需要重抓那一段。伺服器不支援 Range 就丟出例外讓呼叫端處理。
+    """
+    buf = bytearray()
+    total: int | None = None
+    while total is None or len(buf) < total:
+        start = len(buf)
+        end = start + chunk - 1
+        last_err: Exception | None = None
+        for attempt in range(1, tries_per_chunk + 1):
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": UA,
+                        "Accept": "application/json, text/plain, */*",
+                        "Accept-Encoding": "identity",
+                        "Range": f"bytes={start}-{end}",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
+                    if resp.status != 206:
+                        raise RuntimeError(f"伺服器不支援分段下載（HTTP {resp.status}）")
+                    blob = resp.read()
+                    content_range = resp.headers.get("Content-Range", "")
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if attempt < tries_per_chunk:
+                    time.sleep(1.5 * attempt)
+        else:
+            raise RuntimeError(f"分段下載失敗（{start} 起）-> {last_err}")
+
+        if total is None:
+            match = re.search(r"/(\d+)$", content_range)
+            if not match:
+                raise RuntimeError(f"無法解析 Content-Range：{content_range!r}")
+            total = int(match.group(1))
+        if not blob:
+            raise RuntimeError(f"分段下載回傳空內容（{start} 起）")
+        buf.extend(blob)
+
+    return json.loads(bytes(buf).decode("utf-8-sig", errors="replace"))
+
+
 def to_num(value: Any) -> float:
     """把 '1,234' / '-1,234' / '--' / '' 轉成數字。"""
     if value is None:
@@ -332,26 +386,34 @@ def fetch_tpex(day: dt.date, verbose: bool = False) -> list[dict[str, Any]] | No
         context = ssl._create_unverified_context()  # noqa: SLF001
         log("  TPEx：已依 TPEX_INSECURE_SSL=1 略過憑證驗證")
 
+    def download(ctx: Any) -> Any:
+        try:
+            return http_get_json(TPEX_OPENAPI, retries=2, context=ctx)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  TPEx 整包下載失敗（{exc}），改用分段下載")
+            return http_get_json_ranged(TPEX_OPENAPI, context=ctx)
+
     payload: Any = None
     try:
-        payload = http_get_json(TPEX_OPENAPI, retries=4, context=context)
+        payload = download(context)
     except Exception as exc:  # noqa: BLE001
-        if context is not None or "CERTIFICATE_VERIFY_FAILED" not in str(exc):
+        if context is None and "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            log("  TPEx 憑證鏈不完整，改以 AIA 補上中介憑證後重試")
+            pem = _fetch_aia_intermediate("www.tpex.org.tw")
+            if pem:
+                fixed = ssl.create_default_context()  # 仍載入系統根憑證，驗證照做
+                fixed.load_verify_locations(cadata=pem)
+                try:
+                    payload = download(fixed)
+                    log("  TPEx 補上中介憑證後驗證成功")
+                except Exception as exc2:  # noqa: BLE001
+                    log(f"  TPEx 補憑證後仍失敗：{exc2}")
+        else:
             log(f"  TPEx 抓取失敗：{exc}")
-            return None
-        log("  TPEx 憑證鏈不完整，改以 AIA 補上中介憑證後重試")
-        pem = _fetch_aia_intermediate("www.tpex.org.tw")
-        if not pem:
-            return None
-        try:
-            fixed = ssl.create_default_context()  # 仍載入系統根憑證，驗證照做
-            fixed.load_verify_locations(cadata=pem)
-            payload = http_get_json(TPEX_OPENAPI, retries=4, context=fixed)
-            log("  TPEx 補上中介憑證後驗證成功")
-        except Exception as exc2:  # noqa: BLE001
-            log(f"  TPEx 補憑證後仍失敗：{exc2}")
-            log("  （可設 TPEX_INSECURE_SSL=1 略過驗證，或接受報告只含上市）")
-            return None
+
+    if payload is None:
+        log("  （可設 TPEX_INSECURE_SSL=1 略過驗證，或接受報告只含上市）")
+        return None
 
     if not isinstance(payload, list) or not payload:
         log(f"  TPEx 回應格式非預期：{type(payload).__name__}")
